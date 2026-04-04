@@ -1,7 +1,7 @@
 /**
  * @file arduino.ino
  * @brief Main firmware for Arduino Mega 2560 educational robotics platform
- * @version 0.9.7
+ * @version 0.9.8
  *
  * Educational robotics platform firmware for MAE 162 course.
  * Provides real-time motor control, sensor integration, and

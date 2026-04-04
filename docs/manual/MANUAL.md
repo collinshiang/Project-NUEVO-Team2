@@ -1,7 +1,7 @@
 # NUEVO Board and Firmware Manual
 
 **NUEVO** = **N**avigation **U**nit for **E**ducation and **V**ersatile **O**perations
-**Board Revision:** Rev. B · **Firmware:** v0.9.7
+**Board Revision:** Rev. B · **Firmware:** v0.9.8
 
 ---
 
