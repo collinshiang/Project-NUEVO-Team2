@@ -60,6 +60,8 @@ from robot.hardware_map import (
 class Unit(Enum):
     MM   = 1.0   # native firmware units; no conversion needed
     INCH = 25.4  # 1 inch = 25.4 mm
+    AMERICAN = INCH
+    REST_OF_THE_WORLD = MM
 
 
 class FirmwareState(IntEnum):
@@ -70,12 +72,20 @@ class FirmwareState(IntEnum):
 
 
 # =============================================================================
-# MotionHandle  (returned by non-blocking navigation commands)
+# MotionHandle  (for high-level base motion)
 # =============================================================================
 
 class MotionHandle:
     """
-    Handle for a non-blocking navigation command.
+    Handle for a high-level base-motion command.
+
+    This is used by the navigation-style APIs in Robot, such as:
+    - move_to / move_by / move_forward / move_backward
+    - turn_to / turn_by
+    - purepursuit_follow_path / apf_follow_path
+
+    These methods always return a MotionHandle. When blocking=True, the method
+    waits internally before returning the already-finished handle.
 
     Example:
         handle = robot.move_to(500, 0, 200, tolerance=15, blocking=False)
@@ -692,6 +702,8 @@ class Robot:
         blocking: bool = True,
         max_angular_rad_s: float = 1.0,
         timeout: float = None,
+        *,
+        advance_radius: float | None = None,
     ):
         """
         Follow an ordered waypoint path with pure pursuit.
@@ -700,6 +712,8 @@ class Robot:
         velocity            — maximum forward speed in user units/s
         lookahead           — lookahead distance in user units
         tolerance           — goal tolerance in user units
+        advance_radius      — optional intermediate waypoint acceptance radius
+                              in user units; defaults to tolerance
         max_angular_rad_s   — angular-rate clamp in rad/s
 
         Always returns a MotionHandle.
@@ -715,6 +729,10 @@ class Robot:
         vel_mm = float(velocity) * self._unit.value
         lookahead_mm = float(lookahead) * self._unit.value
         tolerance_mm = float(tolerance) * self._unit.value
+        advance_radius_mm = (
+            tolerance_mm if advance_radius is None
+            else float(advance_radius) * self._unit.value
+        )
         max_angular = float(max_angular_rad_s)
 
         def target():
@@ -722,6 +740,7 @@ class Robot:
                 path_mm,
                 vel_mm,
                 lookahead_mm,
+                advance_radius_mm,
                 tolerance_mm,
                 max_angular,
             )
@@ -739,6 +758,8 @@ class Robot:
         max_angular_rad_s: float = 1.0,
         repulsion_gain: float = 500.0,
         timeout: float = None,
+        *,
+        advance_radius: float | None = None,
     ):
         """
         Follow an ordered waypoint path with artificial potential fields.
@@ -748,6 +769,8 @@ class Robot:
         lookahead         — attractive lookahead distance in user units
         tolerance         — goal tolerance in user units
         repulsion_range   — obstacle influence radius in user units
+        advance_radius    — optional intermediate waypoint acceptance radius
+                            in user units; defaults to tolerance
 
         Obstacles come from set_obstacles() and/or set_obstacle_provider().
         """
@@ -761,6 +784,10 @@ class Robot:
         vel_mm = float(velocity) * self._unit.value
         lookahead_mm = float(lookahead) * self._unit.value
         tolerance_mm = float(tolerance) * self._unit.value
+        advance_radius_mm = (
+            tolerance_mm if advance_radius is None
+            else float(advance_radius) * self._unit.value
+        )
         repulsion_range_mm = float(repulsion_range) * self._unit.value
         max_angular = float(max_angular_rad_s)
         repulsion_gain = float(repulsion_gain)
@@ -770,6 +797,7 @@ class Robot:
                 path_mm,
                 vel_mm,
                 lookahead_mm,
+                advance_radius_mm,
                 tolerance_mm,
                 repulsion_range_mm,
                 max_angular,
@@ -788,6 +816,9 @@ class Robot:
         """
         Rotate to an absolute heading. Firmware must be in RUNNING state.
         angle_deg is in degrees (CCW positive, same convention as the firmware).
+
+        Always returns a MotionHandle.
+        blocking=True waits before returning the handle.
         """
         target_rad = math.radians(angle_deg)
         tol_rad    = math.radians(tolerance_deg)
@@ -804,7 +835,12 @@ class Robot:
         tolerance_deg: float = 2.0,
         timeout: float = None,
     ):
-        """Rotate by delta_deg relative to current heading."""
+        """
+        Rotate by delta_deg relative to current heading.
+
+        Always returns a MotionHandle.
+        blocking=True waits before returning the handle.
+        """
         _, _, cur_deg = self.get_pose()
         return self.turn_to(cur_deg + delta_deg,
                             blocking=blocking, tolerance_deg=tolerance_deg, timeout=timeout)
@@ -1263,6 +1299,7 @@ class Robot:
         waypoints_mm: list[tuple[float, float]],
         max_vel_mm: float,
         lookahead_mm: float,
+        advance_radius_mm: float,
         tolerance_mm: float,
         max_angular_rad_s: float,
         update_hz: float = float(DEFAULT_NAV_HZ),
@@ -1279,7 +1316,7 @@ class Robot:
             waypoints_mm,
             planner,
             max_vel_mm,
-            max(tolerance_mm, lookahead_mm),
+            advance_radius_mm,
             tolerance_mm,
             update_hz=update_hz,
         )
@@ -1289,6 +1326,7 @@ class Robot:
         waypoints_mm: list[tuple[float, float]],
         max_vel_mm: float,
         lookahead_mm: float,
+        advance_radius_mm: float,
         tolerance_mm: float,
         repulsion_range_mm: float,
         max_angular_rad_s: float,
@@ -1311,7 +1349,7 @@ class Robot:
             waypoints_mm,
             planner,
             max_vel_mm,
-            max(tolerance_mm, lookahead_mm),
+            advance_radius_mm,
             tolerance_mm,
             update_hz=update_hz,
         )

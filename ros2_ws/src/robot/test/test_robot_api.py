@@ -292,6 +292,56 @@ class RobotApiTests(unittest.TestCase):
                 blocking=False,
             )
 
+    def test_purepursuit_follow_path_defaults_advance_radius_to_tolerance(self) -> None:
+        with mock.patch.object(self.robot, "_nav_follow_purepursuit_path") as nav_follow, \
+             mock.patch.object(
+                 self.robot,
+                 "_start_nav",
+                 side_effect=lambda target, blocking, timeout: (target(), "handle")[1],
+             ):
+            result = self.robot.purepursuit_follow_path(
+                [(0.0, 0.0), (100.0, 0.0)],
+                velocity=100.0,
+                lookahead=100.0,
+                tolerance=20.0,
+                blocking=False,
+            )
+
+        self.assertEqual(result, "handle")
+        nav_follow.assert_called_once_with(
+            [(0.0, 0.0), (100.0, 0.0)],
+            100.0,
+            100.0,
+            20.0,
+            20.0,
+            1.0,
+        )
+
+    def test_purepursuit_follow_path_accepts_explicit_advance_radius(self) -> None:
+        with mock.patch.object(self.robot, "_nav_follow_purepursuit_path") as nav_follow, \
+             mock.patch.object(
+                 self.robot,
+                 "_start_nav",
+                 side_effect=lambda target, blocking, timeout: (target(), "handle")[1],
+             ):
+            self.robot.purepursuit_follow_path(
+                [(0.0, 0.0), (100.0, 0.0)],
+                velocity=100.0,
+                lookahead=100.0,
+                tolerance=20.0,
+                advance_radius=35.0,
+                blocking=False,
+            )
+
+        nav_follow.assert_called_once_with(
+            [(0.0, 0.0), (100.0, 0.0)],
+            100.0,
+            100.0,
+            35.0,
+            20.0,
+            1.0,
+        )
+
     def test_apf_follow_path_requires_waypoints(self) -> None:
         with self.assertRaisesRegex(ValueError, "must not be empty"):
             self.robot.apf_follow_path(
@@ -302,6 +352,34 @@ class RobotApiTests(unittest.TestCase):
                 repulsion_range=150.0,
                 blocking=False,
             )
+
+    def test_apf_follow_path_defaults_advance_radius_to_tolerance(self) -> None:
+        with mock.patch.object(self.robot, "_nav_follow_apf_path") as nav_follow, \
+             mock.patch.object(
+                 self.robot,
+                 "_start_nav",
+                 side_effect=lambda target, blocking, timeout: (target(), "handle")[1],
+             ):
+            result = self.robot.apf_follow_path(
+                [(0.0, 0.0), (100.0, 0.0)],
+                velocity=100.0,
+                lookahead=100.0,
+                tolerance=20.0,
+                repulsion_range=150.0,
+                blocking=False,
+            )
+
+        self.assertEqual(result, "handle")
+        nav_follow.assert_called_once_with(
+            [(0.0, 0.0), (100.0, 0.0)],
+            100.0,
+            100.0,
+            20.0,
+            20.0,
+            150.0,
+            1.0,
+            500.0,
+        )
 
     def test_unit_dependent_navigation_parameters_must_be_explicit(self) -> None:
         with self.assertRaises(TypeError):

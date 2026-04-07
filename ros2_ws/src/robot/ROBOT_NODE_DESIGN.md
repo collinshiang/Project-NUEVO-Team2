@@ -8,7 +8,7 @@ The `robot` package is structured in three layers on top of the existing `bridge
 ┌──────────────────────────────────────────────┐
 │  Layer 3 — Path Planner (PathPlanner)         │  pure pursuit; APF added when lidar ready
 ├──────────────────────────────────────────────┤
-│  Layer 2 — FSM (RobotFSM base class)          │  student-authored logic
+│  Layer 2 — main.py state loop                 │  student-authored logic + helper functions
 ├──────────────────────────────────────────────┤
 │  Layer 1 — Robot API (Robot)                  │  wraps all bridge topics/services
 ├──────────────────────────────────────────────┤
@@ -111,37 +111,53 @@ remains untouched.
 
 All navigation commands check that firmware is in RUNNING state before sending.
 
-`blocking=True` — method blocks until the goal is reached or `timeout` expires, then
-returns `True` (success) or `False` (timeout).
+These are the high-level base-motion APIs. They always return a `MotionHandle`.
 
-`blocking=False` — method returns immediately; use the returned `MotionHandle` to poll
-or wait later.
+`blocking=True` — method waits internally until the goal is reached or `timeout`
+expires, then returns the already-finished `MotionHandle`.
+
+`blocking=False` — method returns immediately with a live `MotionHandle` that can be
+polled, waited on, or cancelled later.
 
 | Method | Default | Notes |
 |---|---|---|
-| `move_to(x, y, velocity, blocking=True, tolerance=10, timeout=None) → bool / MotionHandle` | blocking | navigate to (x, y) in user units at velocity user-units/s |
-| `move_by(dx, dy, velocity, blocking=True, tolerance=10, timeout=None) → bool / MotionHandle` | blocking | relative move |
-| `turn_to(angle_deg, blocking=True, tolerance_deg=2, timeout=None) → bool / MotionHandle` | blocking | rotate to absolute heading |
-| `turn_by(delta_deg, blocking=True, tolerance_deg=2, timeout=None) → bool / MotionHandle` | blocking | rotate by delta |
+| `move_to(x, y, velocity, tolerance, blocking=True, timeout=None) → MotionHandle` | blocking | navigate to (x, y) in user units at velocity user-units/s |
+| `move_by(dx, dy, velocity, tolerance, blocking=True, timeout=None) → MotionHandle` | blocking | relative move in the current user unit system |
+| `move_forward(distance, velocity, tolerance, blocking=True, timeout=None) → MotionHandle` | blocking | move forward along the robot's current heading |
+| `move_backward(distance, velocity, tolerance, blocking=True, timeout=None) → MotionHandle` | blocking | move backward along the robot's current heading |
+| `turn_to(angle_deg, blocking=True, tolerance_deg=2, timeout=None) → MotionHandle` | blocking | rotate to absolute heading |
+| `turn_by(delta_deg, blocking=True, tolerance_deg=2, timeout=None) → MotionHandle` | blocking | rotate by delta |
+| `purepursuit_follow_path(path, velocity, lookahead, tolerance, blocking=True, max_angular_rad_s=1.0, timeout=None, *, advance_radius=None) → MotionHandle` | blocking | follow an ordered waypoint path with pure pursuit; `advance_radius` defaults to `tolerance` |
+| `apf_follow_path(path, velocity, lookahead, tolerance, repulsion_range, blocking=True, max_angular_rad_s=1.0, repulsion_gain=500.0, timeout=None, *, advance_radius=None) → MotionHandle` | blocking | follow an ordered waypoint path with APF obstacle avoidance; `advance_radius` defaults to `tolerance` |
 | `is_moving() → bool` | — | True if a motion command is active |
 | `cancel_motion()` | — | abort current navigation command; calls `stop()` |
 
-`MotionHandle` (returned when `blocking=False`):
+`MotionHandle`:
 ```python
 handle.wait(timeout=None) → bool   # block until done
-handle.is_done() → bool            # non-blocking poll
+handle.is_finished() → bool        # non-blocking poll
+handle.is_done() → bool            # backward-compatible alias
 handle.cancel()                    # abort
 ```
+
+This handle pattern is intentionally limited to high-level base motion. It is
+useful when student code wants to:
+- start a long-running path-follow or turn command
+- keep a simple state loop responsive
+- poll `is_finished()` from `main.py`
+
+Low-level actuator APIs below keep a simpler command/wait contract instead of
+introducing handles everywhere.
 
 #### DC motors — low-level
 
 | Method | Blocking | Notes |
 |---|---|---|
 | `set_motor_pwm(motor_id, pwm)` | no | raw PWM −255…255 |
-| `set_motor_position(motor_id, ticks, blocking=True, timeout=None)` | optional | position control mode |
+| `set_motor_position(motor_id, ticks, blocking=True, timeout=None) → bool` | optional | position control mode; returns `True` on completion, `False` on timeout |
 | `enable_motor(motor_id, mode=DCMotorMode.VELOCITY)` | no | publishes `DCEnable`; mode follows firmware enum |
 | `disable_motor(motor_id)` | no | publishes `DCEnable` |
-| `home_motor(motor_id, blocking=True, timeout=None)` | optional | publishes `DCHome` |
+| `home_motor(motor_id, blocking=True, timeout=None) → bool` | optional | publishes `DCHome`; returns `True` on completion, `False` on timeout |
 | `reset_motor_position(motor_id)` | no | publishes `DCResetPosition` |
 | `set_pid_gains(motor_id, loop_type, kp, ki, kd, max_output, max_integral)` | no | publishes `DCPidSet`; `loop_type` uses `DCPidLoop` (`POSITION=0`, `VELOCITY=1`) |
 | `request_pid(motor_id, loop_type)` | no | publishes `DCPidReq`; result arrives on `/dc_pid_rsp` |
@@ -152,8 +168,8 @@ handle.cancel()                    # abort
 | Method | Blocking | Notes |
 |---|---|---|
 | `step_enable(stepper_id)` / `step_disable(stepper_id)` | no | |
-| `step_move(stepper_id, steps, move_type=StepMoveType.RELATIVE, blocking=True, timeout=None)` | optional | publishes `StepMove`; `move_type` uses the firmware enum |
-| `step_home(stepper_id, blocking=True, timeout=None)` | optional | publishes `StepHome` |
+| `step_move(stepper_id, steps, move_type=StepMoveType.RELATIVE, blocking=True, timeout=None) → bool` | optional | publishes `StepMove`; `move_type` uses the firmware enum; returns `True` on completion, `False` on timeout |
+| `step_home(stepper_id, blocking=True, timeout=None) → bool` | optional | publishes `StepHome`; returns `True` on completion, `False` on timeout |
 | `step_set_config(stepper_id, ...)` | no | publishes `StepConfigSet` |
 | `get_step_state() → StepStateAll` | no | cached `/step_state_all` |
 
@@ -203,64 +219,79 @@ share of the full period, with the remaining time used for the fade back down.
 
 ---
 
-## Layer 2 — RobotFSM (FSM base class)
+## Layer 2 — `main.py` state loop and custom helpers
 
-Students subclass `RobotFSM` and implement their state machine. The base class
-provides state registration, transition wiring, and a `spin()` loop.
+Students now work directly in `main.py`. The intended structure is:
+- one explicit `state` variable
+- one monotonic-timed loop in `run(robot)`
+- helper functions for custom actions or sequences
 
-```python
-class RobotFSM:
-    def __init__(self, robot: Robot): ...
-
-    # --- builder API ---
-    def add_transition(self,
-                       from_state: str,
-                       event: str,
-                       to_state: str,
-                       action: Callable = None,
-                       guard: Callable[[], bool] = None): ...
-
-    # --- runtime API ---
-    def trigger(self, event: str): ...   # fire an event (thread-safe)
-    def get_state(self) -> str: ...
-    def spin(self, hz: float = 50): ... # runs the FSM update loop; blocks
-
-    # --- hooks for subclasses ---
-    def on_enter(self, state: str): ... # called on state entry; override per-state
-    def on_exit(self, state: str): ...  # called on state exit; override per-state
-    def update(self): ...               # called every spin cycle; override for polling logic
-```
+This keeps the mission logic readable without requiring students to learn
+inheritance or a transition framework before they can use the robot.
 
 ### Minimal student example
 
 ```python
-class MyFSM(RobotFSM):
-    def __init__(self, robot):
-        super().__init__(robot)
-        self.add_transition("IDLE",    "start",    "MOVING", action=self._start_move)
-        self.add_transition("MOVING",  "arrived",  "IDLE",   action=self._celebrate)
-        self.add_transition("MOVING",  "estop",    "STOPPED")
-        self.add_transition("IDLE",    "estop",    "STOPPED")
+def run(robot):
+    state = "IDLE"
+    motion = None
+    period = 1.0 / 50.0
+    next_tick = time.monotonic()
 
-    def update(self):
-        if self.get_state() == "IDLE":
-            if self.robot.get_button(1):
-                self.trigger("start")
+    while True:
+        if state == "IDLE":
+            if robot.get_button(1):
+                motion = robot.move_forward(
+                    300.0,
+                    100.0,
+                    tolerance=20.0,
+                    blocking=False,
+                )
+                state = "MOVING"
 
-    def _start_move(self):
-        self.robot.move_to(500, 0, 200, blocking=False)
+        elif state == "MOVING":
+            if motion is not None and motion.is_finished():
+                robot.stop()
+                state = "IDLE"
 
-    def _celebrate(self):
-        self.robot.set_led(1, 255)
+        next_tick += period
+        sleep_time = next_tick - time.monotonic()
+        if sleep_time > 0.0:
+            time.sleep(sleep_time)
+        else:
+            next_tick = time.monotonic()
 ```
+
+### Custom background sequences
+
+For student-defined arm/manipulator logic, `main.py` can use the local task
+helpers from `robot.util`:
+
+```python
+from robot.util import run_task
+
+def my_sequence_1(robot, blocking=True):
+    def worker(task):
+        robot.set_servo(1, 30)
+        task.sleep(0.5)
+        robot.set_servo(2, 120)
+        task.sleep(0.5)
+
+    return run_task(worker, blocking=blocking)
+```
+
+This is intentionally separate from `MotionHandle`:
+- base motion uses `MotionHandle`
+- custom `main.py` sequences use `TaskHandle`
+- low-level actuator move/home methods keep a simple `bool` completion result
 
 ---
 
 ## Layer 3 — PathPlanner (`path_planner.py`)
 
 Path planners are **pure algorithm classes** — no threads, no ROS subscriptions.
-`Robot` calls `compute_velocity()` from its own internal navigation thread
-(`Robot._nav_to_waypoints`). Students who want a custom algorithm subclass
+`Robot` calls `compute_velocity()` from its own internal navigation thread.
+Students who want a custom algorithm subclass
 `PathPlanner` and implement `compute_velocity()`.
 
 ### Base class
@@ -297,11 +328,14 @@ class APFPlanner(PathPlanner):
 ### Thread model
 
 ```
-Main thread  ──► RobotFSM.spin()
-                   └─ calls robot.move_to(..., blocking=False)  → MotionHandle
-                         └─ Robot starts _nav_thread
-                               └─ _nav_thread calls planner.compute_velocity()
-                                  and robot._send_body_velocity_mm() in a loop
+Main thread  ──► main.run(robot)
+                   └─ explicit state loop in main.py
+                        ├─ may call robot.move_to(..., blocking=False)  → MotionHandle
+                        │    └─ Robot starts _nav_thread
+                        │         └─ _nav_thread calls planner.compute_velocity()
+                        │            and robot._send_body_velocity_mm() in a loop
+                        └─ may call my_sequence_1(..., blocking=False)  → TaskHandle
+                             └─ custom worker thread defined in main.py
 
 ROS spin thread ──► updates Robot internal state (pose, buttons, etc.)
 ```
@@ -332,7 +366,7 @@ the `set_*` odometry-parameter helpers if the robot is wired differently.
 
 ---
 
-## File layout (proposed)
+## File layout
 
 ```
 robot/
@@ -341,13 +375,14 @@ robot/
 │   ├── hardware_map.py        # user-facing IDs + firmware-derived timing constants
 │   ├── robot_node.py          # ROS node; constructs Robot, spins ROS, calls main.run()
 │   ├── robot.py               # Robot class (Layer 1)
-│   ├── robot_fsm.py           # RobotFSM base class (Layer 2)
 │   ├── path_planner.py        # PathPlanner base + PurePursuitPlanner (Layer 3)
-│   ├── main.py                # ← students edit this; entry point for their FSM
+│   ├── util.py                # TaskHandle, run_task(), densify_polyline()
+│   ├── main.py                # ← students edit this; explicit state loop entry point
 │   └── examples/
 │       ├── square_drive.py    # drive a square using move_to
-│       └── button_fsm.py      # button-triggered state machine
+│       ├── button_fsm.py      # older FSM-style example
+│       └── move_servos.py     # custom TaskHandle sequence example
 ```
 
-`main.py` is the only file students need to edit. It defines their FSM class and a
-`run(robot)` function that `robot_node.py` calls after ROS is set up.
+`main.py` is the primary file students edit. It defines helper functions and a
+`run(robot)` loop that `robot_node.py` calls after ROS is set up.
