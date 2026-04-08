@@ -62,24 +62,3 @@ docker compose -f $COMPOSE exec ros2_runtime bash -c \
 You should only see nodes running on this RPi. Nodes from other teams' RPis
 should no longer appear even if they are on the same network and running.
 
-## Future: Global Position Feedback
-
-`ROS_LOCALHOST_ONLY=1` is set at the container level but can be overridden
-per-process. When a global positioning system is added, launch the relay node
-that receives external position data with the variable explicitly unset:
-
-```bash
-ROS_LOCALHOST_ONLY=0 ros2 run positioning relay_node
-```
-
-Or in a launch file:
-```python
-Node(
-    package='positioning',
-    executable='relay_node',
-    additional_env={'ROS_LOCALHOST_ONLY': '0'},
-)
-```
-
-This relay node subscribes to the global position topic (visible on the network)
-and republishes it locally where all other localhost-only nodes can consume it.
