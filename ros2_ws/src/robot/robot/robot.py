@@ -48,6 +48,7 @@ from bridge_interfaces.msg import (
     IOInputState,
 )
 from bridge_interfaces.srv import SetFirmwareState
+from sensor_msgs.msg import LaserScan
 
 from robot.hardware_map import (
     BUTTON_COUNT,
@@ -261,6 +262,7 @@ class Robot:
         node.create_subscription(IOInputState,     '/io_input_state',    self._on_io_input,    10)
         node.create_subscription(IOOutputState,    '/io_output_state',   self._on_io_output,   10)
         node.create_subscription(SysOdomParamRsp,  '/sys_odom_param_rsp', self._on_odom_param_rsp, 10)
+        node.create_subscription(LaserScan,         '/scan',              self._on_lidar,          10)
 
         # ── Service clients ───────────────────────────────────────────────────
         self._set_state_client = node.create_client(SetFirmwareState, '/set_firmware_state')
@@ -371,6 +373,23 @@ class Robot:
             int(msg.right_motor_number),
             bool(msg.right_motor_dir_inverted),
         )
+
+    def _on_lidar(self, msg: LaserScan) -> None:
+        angles = np.arange(msg.angle_min, msg.angle_max + msg.angle_increment, msg.angle_increment)
+        ranges = np.array(msg.ranges)
+
+        # Filter invalid values
+        valid = np.isfinite(ranges)
+        angles = angles[valid]
+        ranges = ranges[valid]
+
+        # Convert polar to Cartesian (robot frame, metres -> mm)
+        x = ranges * np.cos(angles)
+        y = ranges * np.sin(angles)
+        with self._lock:
+            self._obstacles_mm = np.float64(
+                np.concatenate([x[:, np.newaxis], y[:, np.newaxis]], axis=1)
+            ) * 1000.0
 
     # =========================================================================
     # System
