@@ -203,9 +203,9 @@ class Robot:
         self._servo_state: ServoStateAll = None
         self._io_output_state: IOOutputState = None
         self._imu:        SensorImu      = None
-        self._mag_heading:      float | None = None   # absolute heading from AHRS (rad)
-        self._fused_theta:      float        = 0.0    # fusion strategy output (rad)
-        self._fused_theta_offset: float      = 0.0    # heading at last reset_odometry(); zeroes fused heading
+        self._mag_heading:        float | None = None   # absolute heading from AHRS (rad)
+        self._mag_heading_offset: float      = 0.0    # mag heading at last reset_odometry(); zeroes fused heading
+        self._fused_theta:        float      = 0.0    # fusion strategy output (rad)
         self._fusion: SensorFusion           = ComplementaryFilter(alpha=0.02)
         self._pose:    tuple = (0.0, 0.0, 0.0)  # x_mm, y_mm, theta_rad (raw odometry)
         # ── GPS position fusion ───────────────────────────────────────────────
@@ -365,11 +365,20 @@ class Robot:
             self._vel  = (msg.vx, msg.vy, msg.v_theta)
 
             # Orientation fusion: delegate to the active strategy.
+            # Shift mag heading to be relative to the pose at last reset_odometry()
+            # so that fused heading starts at 0 after every reset, matching odometry.
+            if self._mag_heading is not None:
+                relative_mag = math.atan2(
+                    math.sin(self._mag_heading - self._mag_heading_offset),
+                    math.cos(self._mag_heading - self._mag_heading_offset),
+                )
+            else:
+                relative_mag = None
             linear_vel  = math.hypot(float(msg.vx), float(msg.vy))
             angular_vel = float(msg.v_theta)
             self._fused_theta = self._fusion.update(
                 odom_theta  = msg.theta,
-                mag_heading = self._mag_heading,
+                mag_heading = relative_mag,
                 linear_vel  = linear_vel,
                 angular_vel = angular_vel,
             )
@@ -525,11 +534,12 @@ class Robot:
     def reset_odometry(self) -> None:
         """Reset firmware odometry pose to (0, 0, current initial theta).
 
-        Also zeroes the fused heading so that get_fused_orientation() and
-        get_pose()[2] share the same reference frame after the reset.
+        Also captures the current magnetometer heading as the new zero reference
+        so that get_fused_orientation() and get_pose()[2] both start at 0 after
+        the reset, regardless of absolute compass direction.
         """
         with self._lock:
-            self._fused_theta_offset = self._fused_theta
+            self._mag_heading_offset = self._mag_heading if self._mag_heading is not None else 0.0
         msg = SysOdomReset()
         msg.flags = 0
         self._odom_pub.publish(msg)
@@ -1495,7 +1505,7 @@ class Robot:
         ``mag_calibrated = True``. Before calibration, returns odometry theta.
         """
         with self._lock:
-            return math.degrees(self._fused_theta - self._fused_theta_offset)
+            return math.degrees(self._fused_theta)
 
     def set_fusion_strategy(self, strategy: SensorFusion) -> None:
         """
@@ -1836,8 +1846,7 @@ class Robot:
     def _get_pose_mm(self) -> tuple[float, float, float]:
         """Return fused (x_mm, y_mm, theta_rad) without unit conversion."""
         with self._lock:
-            return (self._fused_x_mm, self._fused_y_mm,
-                    self._fused_theta - self._fused_theta_offset)
+            return (self._fused_x_mm, self._fused_y_mm, self._fused_theta)
 
     def _get_obstacles_mm(self) -> list[tuple[float, float]]:
         """Return cached and provider-supplied APF obstacles in robot-frame millimeters."""
