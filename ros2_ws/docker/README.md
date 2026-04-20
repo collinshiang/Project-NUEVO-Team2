@@ -190,6 +190,21 @@ Because the compose file does not hard-mount individual device paths with
 `devices:`, the container can start even when optional hardware is unplugged.
 ROS nodes should still handle missing devices in code and report clear errors.
 
+The C1 lidar driver is built into the RPi ROS workspace. Start it inside the
+container with:
+
+```bash
+docker compose -f ros2_ws/docker/docker-compose.rpi.yml exec ros2_runtime bash -lc \
+  'source /ros2_ws/install/setup.bash && ros2 launch rplidar_ros rplidar_c1.launch.py'
+```
+
+In another shell, verify scans:
+
+```bash
+docker compose -f ros2_ws/docker/docker-compose.rpi.yml exec ros2_runtime bash -lc \
+  'source /ros2_ws/install/setup.bash && ros2 topic echo /scan --once'
+```
+
 ## Development VM
 
 The VM compose file is for development and mock mode:
