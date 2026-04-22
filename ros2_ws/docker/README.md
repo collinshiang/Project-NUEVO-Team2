@@ -33,6 +33,12 @@ docker compose -f $COMPOSE restart ros2_runtime
 docker compose -f $COMPOSE logs -f ros2_runtime
 ```
 
+Open another shell inside the running container:
+
+```bash
+./ros2_ws/docker/enter_ros2.sh rpi
+```
+
 Rebuild and wait until the container is actually healthy:
 
 ```bash
@@ -57,10 +63,10 @@ docker compose -f $COMPOSE up -d --build --wait
 docker compose -f $COMPOSE logs -f ros2_runtime
 ```
 
-The first startup can take a few minutes on an RPi while `colcon build` creates the ROS
-workspace install. `--wait` keeps the command attached until Docker marks the
-container healthy, which avoids racing `enter_ros2.sh` against the startup
-build. Later restarts reuse the cached Docker volumes.
+The first startup can take a few minutes on an RPi while `colcon build`
+creates the ROS workspace install. `--wait` keeps the command attached until
+Docker marks the container healthy. Later restarts reuse the cached Docker
+volumes.
 
 The RPi container starts:
 
@@ -206,13 +212,20 @@ docker compose -f ros2_ws/docker/docker-compose.rpi.yml exec ros2_runtime bash -
   'source /ros2_ws/install/setup.bash && ros2 topic echo /scan --once'
 ```
 
-Or use the helper shell, which now waits for the container to become healthy
-before opening:
+Or use the helper shell. If the container is already running, this opens
+another terminal in the same container. If it is stopped, the helper starts it
+without rebuilding first:
 
 ```bash
 ./ros2_ws/docker/enter_ros2.sh rpi
 ros2 launch rplidar_ros rplidar_c1.launch.py
 ros2 topic echo /scan --once
+```
+
+To explicitly rebuild before entering:
+
+```bash
+./ros2_ws/docker/enter_ros2.sh --build rpi
 ```
 
 ## Development VM
