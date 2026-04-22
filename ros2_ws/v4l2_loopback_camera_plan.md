@@ -107,9 +107,9 @@ Proposed loopback defaults:
 PI_CAMERA_DEVICE=/dev/video10
 PI_CAMERA_VIDEO_NR=10
 PI_CAMERA_CARD_LABEL=Pi Camera
-PI_CAMERA_WIDTH=1280
-PI_CAMERA_HEIGHT=720
-PI_CAMERA_FPS=15
+PI_CAMERA_WIDTH=640
+PI_CAMERA_HEIGHT=480
+PI_CAMERA_FPS=5
 PI_CAMERA_PIXEL_FORMAT=YUYV
 ```
 
@@ -280,7 +280,7 @@ Use the documented `v4l2_camera` parameter style:
 ```bash
 ros2 run v4l2_camera v4l2_camera_node --ros-args \
   -p video_device:=/dev/video10 \
-  -p image_size:="[1280,720]" \
+  -p image_size:="[640,480]" \
   -p pixel_format:=YUYV \
   -p output_encoding:=rgb8
 ```
