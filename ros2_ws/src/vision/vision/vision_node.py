@@ -10,13 +10,26 @@ from rclpy.node import Node
 
 from vision.camera_utils import ManagedCamera
 from vision.model_utils import (
-    DetectionRecord,
+    DetectedObject,
     YoloNcnnDetector,
     default_model_path,
     resolve_model_path,
 )
 from vision.timing_utils import FixedRateScheduler
 from vision.traffic_light import classify_traffic_light_color
+
+
+# User-facing COCO class filter.
+# Add standard COCO names here, matching data/yolo26n_ncnn_imgsz_416/metadata.yaml.
+CLASSES_OF_INTEREST = [
+    "traffic light",
+    "stop sign",
+    "person",
+    # "car",
+    # "giraffe",
+]
+
+DEFAULT_CLASS_FILTER = ",".join(CLASSES_OF_INTEREST)
 
 
 class VisionNode(Node):
@@ -37,7 +50,7 @@ class VisionNode(Node):
         self.declare_parameter("confidence_threshold", 0.25)
         self.declare_parameter("iou_threshold", 0.7)
         self.declare_parameter("max_detections", 20)
-        self.declare_parameter("class_filter", "traffic light,stop sign,person")
+        self.declare_parameter("class_filter", DEFAULT_CLASS_FILTER)
         self.declare_parameter("ncnn_threads", 4)
         self.declare_parameter("reconnect_delay_sec", 1.0)
         self.declare_parameter("log_interval_sec", 5.0)
@@ -95,18 +108,18 @@ class VisionNode(Node):
             )
         )
 
-    def _infer(self, frame) -> list[DetectionRecord]:
+    def _infer(self, frame) -> list[DetectedObject]:
         return self._detector.predict(frame)
 
-    def _build_detection_msg(self, record: DetectionRecord) -> VisionDetection:
+    def _build_detection_msg(self, detected_object: DetectedObject) -> VisionDetection:
         detection = VisionDetection()
-        detection.class_name = record.class_name
-        detection.confidence = float(record.confidence)
-        detection.x = int(record.x)
-        detection.y = int(record.y)
-        detection.width = int(record.width)
-        detection.height = int(record.height)
-        for attribute in record.attributes:
+        detection.class_name = detected_object.class_name
+        detection.confidence = float(detected_object.confidence)
+        detection.x = int(detected_object.x)
+        detection.y = int(detected_object.y)
+        detection.width = int(detected_object.width)
+        detection.height = int(detected_object.height)
+        for attribute in detected_object.attributes:
             detection.attribute_names.append(attribute.name)
             detection.attribute_values.append(attribute.value)
             detection.attribute_scores.append(float(attribute.score))
@@ -117,15 +130,15 @@ class VisionNode(Node):
         capture_stamp,
         image_width: int,
         image_height: int,
-        records: list[DetectionRecord],
+        detected_objects: list[DetectedObject],
     ) -> VisionDetectionArray:
         message = VisionDetectionArray()
         message.header.stamp = capture_stamp
         message.header.frame_id = "vision_camera"
         message.image_width = int(image_width)
         message.image_height = int(image_height)
-        for record in records:
-            message.detections.append(self._build_detection_msg(record))
+        for detected_object in detected_objects:
+            message.detections.append(self._build_detection_msg(detected_object))
         return message
 
     def run(self) -> None:
@@ -139,7 +152,7 @@ class VisionNode(Node):
 
             scheduler.wait_until_ready()
 
-            ok, frame = self._camera.read()
+            ok, frame = self._camera.read() # frame is a numpy array
             if not ok or frame is None:
                 self._camera.handle_read_failure()
                 scheduler.reset()
@@ -149,7 +162,8 @@ class VisionNode(Node):
             inference_start = time.monotonic()
             try:
                 detections = self._infer(frame)
-
+                # and/or some custom cnn/non-cnn object detection method
+                
                 for detection in detections:
                     object_crop = frame[
                         detection.y : detection.y + detection.height,
@@ -159,16 +173,20 @@ class VisionNode(Node):
                     if detection.class_name == "traffic light":
                         traffic_light_crop = object_crop
                         color_label, color_score = classify_traffic_light_color(traffic_light_crop)
+                        
+                        # Add attribute to the detection result; we add color here as an example
                         detection.add_attribute("color", color_label, color_score)
+                        
                     elif detection.class_name == "face":
                         face_crop = object_crop
-                        # TODO(student): analyze the face crop and attach your own
+                        # TODO: analyze the face crop and attach your own
                         # attributes here, for example gender or customer type.
                         _ = face_crop
                         pass
+                    
                     elif detection.class_name == "my_object":
                         custom_object_crop = object_crop
-                        # TODO(student): add custom object-specific checks here.
+                        # TODO: add custom object-specific checks here.
                         _ = custom_object_crop
                         pass
 
@@ -176,7 +194,7 @@ class VisionNode(Node):
                     capture_stamp=capture_stamp,
                     image_width=frame.shape[1],
                     image_height=frame.shape[0],
-                    records=detections,
+                    detected_objects=detections,
                 )
                 self._publisher.publish(message)
                 detection_count = len(message.detections)

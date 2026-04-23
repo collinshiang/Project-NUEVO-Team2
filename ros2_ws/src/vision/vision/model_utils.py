@@ -20,7 +20,7 @@ class DetectionAttribute:
 
 
 @dataclass
-class DetectionRecord:
+class DetectedObject:
     class_name: str
     confidence: float
     x: int
@@ -95,7 +95,7 @@ class YoloNcnnDetector:
     def class_count(self) -> int:
         return len(self.names)
 
-    def predict(self, frame_bgr: np.ndarray) -> list[DetectionRecord]:
+    def predict(self, frame_bgr: np.ndarray) -> list[DetectedObject]:
         preprocess_start = time.monotonic()
         input_tensor, letterbox = _letterbox_bgr_to_ncnn_mat(frame_bgr, self.input_size)
         inference_start = time.monotonic()
@@ -106,7 +106,7 @@ class YoloNcnnDetector:
 
         postprocess_start = time.monotonic()
         predictions = _normalize_output(np.array(output), class_count=self.class_count)
-        records = _decode_predictions(
+        detected_objects = _decode_predictions(
             predictions=predictions,
             names=self.names,
             letterbox=letterbox,
@@ -119,7 +119,7 @@ class YoloNcnnDetector:
         self.last_preprocess_ms = (inference_start - preprocess_start) * 1000.0
         self.last_inference_ms = (postprocess_start - inference_start) * 1000.0
         self.last_postprocess_ms = (done - postprocess_start) * 1000.0
-        return records
+        return detected_objects
 
 
 def default_model_path(
@@ -278,7 +278,7 @@ def _decode_predictions(
     iou_threshold: float,
     max_detections: int,
     class_filter_ids: set[int] | None,
-) -> list[DetectionRecord]:
+) -> list[DetectedObject]:
     if predictions.size == 0:
         return []
 
@@ -319,7 +319,7 @@ def _decode_predictions(
     if max_detections > 0:
         keep = keep[:max_detections]
 
-    records: list[DetectionRecord] = []
+    detected_objects: list[DetectedObject] = []
     for index in keep:
         x1, y1, x2, y2 = [int(round(value)) for value in boxes_xyxy[index].tolist()]
         width = max(0, x2 - x1)
@@ -327,8 +327,8 @@ def _decode_predictions(
         if width <= 0 or height <= 0:
             continue
         class_id = int(class_ids[index])
-        records.append(
-            DetectionRecord(
+        detected_objects.append(
+            DetectedObject(
                 class_name=names.get(class_id, f"class_{class_id}"),
                 confidence=float(confidences[index]),
                 x=x1,
@@ -337,7 +337,7 @@ def _decode_predictions(
                 height=height,
             )
         )
-    return records
+    return detected_objects
 
 
 def _xywh_to_xyxy(boxes_xywh: np.ndarray) -> np.ndarray:
