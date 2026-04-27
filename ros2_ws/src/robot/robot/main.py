@@ -26,16 +26,16 @@ import math
 # Robot build configuration
 # ---------------------------------------------------------------------------
 
-TAG_ID = 11 # set aruco tag ID 11 
+TAG_ID = 12 # set aruco tag ID 11 
 POSITION_UNIT = Unit.MM
-WHEEL_DIAMETER = 74.0
-WHEEL_BASE = 333.0
+WHEEL_DIAMETER = 79.2
+WHEEL_BASE = 358.0
 INITIAL_THETA_DEG = 90.0
 
-LEFT_WHEEL_MOTOR = Motor.DC_M1
+LEFT_WHEEL_MOTOR = Motor.DC_M2
 LEFT_WHEEL_DIR_INVERTED = False
-RIGHT_WHEEL_MOTOR = Motor.DC_M2
-RIGHT_WHEEL_DIR_INVERTED = True
+RIGHT_WHEEL_MOTOR = Motor.DC_M1
+RIGHT_WHEEL_DIR_INVERTED = False
 
 
 def configure_robot(robot: Robot) -> None:
@@ -86,10 +86,11 @@ def run(robot: Robot) -> None:
             print("[FSM] INIT (odometry reset)")
             path_control_points = [ #Define your path control points here (x, y) in mm
                 (0.0, 0.0), # 1st point
-                (0.0, 3.6576e3), # 2nd point
-                #(500.0, 500.0), # 3rd point
-                #(500.0, 0.0), # 4th point
-                #(0.0, 0.0), # 5th point
+                (0.0, 3254.8), # 2nd point
+                (609.6, 3254.8), # 3rd point
+                (609.6, 0.0), # 4th point
+                (914.4, 0.0), # 5th point
+                (914.4, 3254.8), # 6th point                    
             ]    
             path1 = path_control_points
             #path1 = densify_polyline(path_control_points, spacing=20.0)
@@ -101,10 +102,10 @@ def run(robot: Robot) -> None:
         elif state == "IDLE":
             show_idle_leds(robot)
             if robot.get_button(Button.BTN_1):
-                LOOKAHEAD_DIST = 100.0 # Lookahead distance in mm (adjust as needed)
+                LOOKAHEAD_DIST = 50.0 # Lookahead distance in mm (adjust as needed)
                 planner1 = PurePursuitPlanner(
                     lookahead_dist=LOOKAHEAD_DIST, 
-                    max_angular=1.5, # Max angular velocity in rad/s (adjust as needed)
+                    max_angular=2.5, # Max angular velocity in rad/s (adjust as needed)
                     goal_tolerance=20.0, # Distance in mm to consider the target reached (adjust as needed)
              )
                 print("Pure Pursuit Planner is initialized. Start Moving!")
@@ -142,7 +143,7 @@ def run(robot: Robot) -> None:
             linear_velocity_cmd, angular_velocity_cmd_rad_s = planner1.compute_velocity(
                 pose=(current_x, current_y, current_theta_rad),
                 waypoints=remaining_path,
-                max_linear=80.0, # Max linear velocity in mm/s (adjust as needed
+                max_linear=200.0, # Max linear velocity in mm/s (adjust as needed
             )
 
             # Step 6: Use the robot.set_velocity() function to send the velocity commands to the robot.
