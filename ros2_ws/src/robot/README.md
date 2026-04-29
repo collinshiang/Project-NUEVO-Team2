@@ -77,7 +77,7 @@ The current supported flow is:
 1. Configure odometry and optional tracked-tag localization in `main.py`
 2. Build a waypoint path with `densify_polyline(...)`
 3. Call `robot._nav_follow_pp_path(...)`
-4. Call `robot.planner.set_path(path)`
+4. Call `robot._set_obstacle_avoidance_path(path)`
 5. Call `robot._nav_follow_pp_path_loop()` on each FSM tick
 
 This is kept for released lab compatibility. For future work, `APFPlanner` is

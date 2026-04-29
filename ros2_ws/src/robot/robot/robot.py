@@ -266,6 +266,7 @@ class Robot:
         self._have_io_input: bool = False
         self._obstacles_mm: np.ndarray = np.float64([])
         self._obstacle_provider: Callable[[], list[tuple[float, float]]] | None = None
+        self._obstacle_avoidance_planner = None
         self._vision_detections: list[dict[str, object]] = []
         self._vision_image_size: tuple[int, int] = (0, 0)
         self._vision_last_time: float = 0.0
@@ -853,6 +854,19 @@ class Robot:
             raise TypeError("provider must be callable or None")
         with self._lock:
             self._obstacle_provider = provider
+
+    @property
+    def planner(self):
+        """Legacy alias for the current obstacle-avoidance planner instance."""
+        return self._obstacle_avoidance_planner
+
+    def _set_obstacle_avoidance_path(self, path: list[tuple[float, float]]) -> None:
+        if self._obstacle_avoidance_planner is None:
+            raise RuntimeError(
+                "Obstacle-avoidance planner is not initialized. "
+                "Call _nav_follow_pp_path(...) before setting its path."
+            )
+        self._obstacle_avoidance_planner.set_path(path)
 
     def get_detections(self, class_name: str | None = None) -> list[dict[str, object]]:
         """Return the latest cached vision detections.
@@ -2097,7 +2111,7 @@ class Robot:
     ) -> None:
 
         from robot.path_planner import PurePursuitPlannerWithAvoidance
-        self.planner = PurePursuitPlannerWithAvoidance(
+        self._obstacle_avoidance_planner = PurePursuitPlannerWithAvoidance(
             lookahead_distance=lookahead_distance,
             max_linear_speed=max_linear_speed,
             max_angular_speed=max_angular_speed,
@@ -2125,14 +2139,24 @@ class Robot:
         # obstacles = (obstacles-np.float64([[pose[0], pose[1]]]))
         # obstacles = (np.array([[np.cos(pose[2]), -np.sin(pose[2])], [np.sin(pose[2]), np.cos(pose[2])]]).T @ obstacles.T).T # obstacles in robot frame
 
-        v, w = self.planner.compute_velocity(pose, obstacles)
+        if self._obstacle_avoidance_planner is None:
+            raise RuntimeError(
+                "Obstacle-avoidance planner is not initialized. "
+                "Call _nav_follow_pp_path(...) before entering the loop."
+            )
+
+        v, w = self._obstacle_avoidance_planner.compute_velocity(pose, obstacles)
         # print(f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s")
         self.set_velocity(v, math.degrees(w))
         # print(f"Current Pose: ({pose[0]:.1f}, {pose[1]:.1f}, {math.degrees(pose[2]):.1f} deg)")
 
-        if self.planner.TargetReached(self.planner.remaining_path, pose[0], pose[1]):
+        if self._obstacle_avoidance_planner.TargetReached(
+            self._obstacle_avoidance_planner.remaining_path,
+            pose[0],
+            pose[1],
+        ):
             print("MOVING: Target reached! Stopping.")
-            print(self.planner.remaining_path, pose[0], pose[1])
+            print(self._obstacle_avoidance_planner.remaining_path, pose[0], pose[1])
             self.stop()
             return "IDLE"
 

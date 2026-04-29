@@ -98,7 +98,7 @@ def run(robot: Robot) -> None:
                 obstacle_avoidance=True,
                 x_L=300.0,
             )
-            robot.planner.set_path(path)
+            robot._set_obstacle_avoidance_path(path)
             print("Path is ready, entering IDLE state.")
             state = "IDLE"
 

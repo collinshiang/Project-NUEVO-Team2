@@ -86,7 +86,7 @@ Mirrors the currently supported lane-switch obstacle-avoidance flow used by the
 released lab code. Use this as the starting point when you need the existing
 lidar avoidance behavior without editing the released `main.py`.
 
-Key calls: `_nav_follow_pp_path()`, `planner.set_path()`,
+Key calls: `_nav_follow_pp_path()`, `_set_obstacle_avoidance_path()`,
 `_nav_follow_pp_path_loop()`
 
 ---
