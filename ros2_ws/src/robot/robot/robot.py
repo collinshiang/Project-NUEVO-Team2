@@ -223,6 +223,8 @@ class Robot:
         self._right_wheel_motor = self.DEFAULT_RIGHT_WHEEL_MOTOR
         self._left_wheel_dir_inverted = self.DEFAULT_LEFT_WHEEL_DIR_INVERTED
         self._right_wheel_dir_inverted = self.DEFAULT_RIGHT_WHEEL_DIR_INVERTED
+        self._odom_user_configured = False
+        self._odom_confirm_event = threading.Event()
         self._lock             = threading.Lock()
 
         # ── Cached firmware state ─────────────────────────────────────────────
@@ -537,15 +539,45 @@ class Robot:
             self._io_output_state = msg
 
     def _on_odom_param_rsp(self, msg: SysOdomParamRsp) -> None:
-        self._apply_odom_param_snapshot(
-            float(msg.wheel_diameter_mm),
-            float(msg.wheel_base_mm),
-            float(msg.initial_theta_deg),
-            int(msg.left_motor_number),
-            bool(msg.left_motor_dir_inverted),
-            int(msg.right_motor_number),
-            bool(msg.right_motor_dir_inverted),
-        )
+        if not self._odom_user_configured:
+            self._apply_odom_param_snapshot(
+                float(msg.wheel_diameter_mm),
+                float(msg.wheel_base_mm),
+                float(msg.initial_theta_deg),
+                int(msg.left_motor_number),
+                bool(msg.left_motor_dir_inverted),
+                int(msg.right_motor_number),
+                bool(msg.right_motor_dir_inverted),
+            )
+            return
+
+        with self._lock:
+            in_sync = (
+                abs(float(msg.wheel_diameter_mm) - self._wheel_diameter) < 1e-3
+                and abs(float(msg.wheel_base_mm) - self._wheel_base) < 1e-3
+                and abs(float(msg.initial_theta_deg) - self._initial_theta_deg) < 1e-3
+                and int(msg.left_motor_number) == self._left_wheel_motor
+                and bool(msg.left_motor_dir_inverted) == self._left_wheel_dir_inverted
+                and int(msg.right_motor_number) == self._right_wheel_motor
+                and bool(msg.right_motor_dir_inverted) == self._right_wheel_dir_inverted
+            )
+            if in_sync:
+                snapshot = None
+            else:
+                snapshot = (
+                    self._wheel_diameter,
+                    self._wheel_base,
+                    self._initial_theta_deg,
+                    self._left_wheel_motor,
+                    self._left_wheel_dir_inverted,
+                    self._right_wheel_motor,
+                    self._right_wheel_dir_inverted,
+                )
+
+        if in_sync:
+            self._odom_confirm_event.set()
+        elif snapshot is not None:
+            self._publish_odom_params(snapshot)
 
     def _on_vision_detections(self, msg: VisionDetectionArray) -> None:
         detections: list[dict[str, object]] = []
@@ -713,16 +745,24 @@ class Robot:
         left_motor_dir_inverted: bool | None = None,
         right_motor_id: int | None = None,
         right_motor_dir_inverted: bool | None = None,
-    ) -> None:
+        timeout: float = 1.0,
+    ) -> bool:
         """
-        Publish a full odometry-parameter snapshot to firmware in one call.
+        Publish a full odometry-parameter snapshot to firmware and wait for
+        confirmation.
 
         wheel_diameter and wheel_base are in the current user unit system.
         Use set_wheel_diameter_mm() / set_wheel_base_mm() when you need to
         work in explicit raw millimeters instead.
+
+        timeout — seconds to wait for a matching firmware echo. Pass 0 to
+        return immediately after publishing.
+
+        Returns True if the firmware confirmed the params within timeout,
+        False on timeout.
         """
         scale = self._unit.value
-        self._update_odometry_params(
+        return self._update_odometry_params(
             wheel_diameter_mm=None if wheel_diameter is None else float(wheel_diameter) * scale,
             wheel_base_mm=None if wheel_base is None else float(wheel_base) * scale,
             initial_theta_deg=initial_theta_deg,
@@ -730,6 +770,7 @@ class Robot:
             left_wheel_dir_inverted=left_motor_dir_inverted,
             right_wheel_motor=right_motor_id,
             right_wheel_dir_inverted=right_motor_dir_inverted,
+            timeout=timeout,
         )
 
     def request_odometry_parameters(self) -> None:
@@ -2335,7 +2376,8 @@ class Robot:
         left_wheel_dir_inverted: bool | None = None,
         right_wheel_motor: int | None = None,
         right_wheel_dir_inverted: bool | None = None,
-    ) -> None:
+        timeout: float = 0.0,
+    ) -> bool:
         with self._lock:
             next_wheel_diameter = self._wheel_diameter if wheel_diameter_mm is None else \
                 self._require_positive_float("wheel_diameter_mm", wheel_diameter_mm)
@@ -2375,7 +2417,20 @@ class Robot:
             next_right_inverted,
         )
 
+        self._odom_user_configured = True
+        self._odom_confirm_event.clear()
         self._publish_odom_params(snapshot)
+        if timeout <= 0.0:
+            return True
+
+        self.request_odometry_parameters()
+        confirmed = self._odom_confirm_event.wait(timeout=timeout)
+        if not confirmed:
+            self._node.get_logger().warning(
+                f"[robot] set_odometry_parameters: firmware did not confirm within "
+                f"{timeout}s — bridge may not be connected yet or firmware rejected params"
+            )
+        return confirmed
 
     def _publish_odom_params(
         self,
