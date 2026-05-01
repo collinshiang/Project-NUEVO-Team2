@@ -64,6 +64,7 @@ from bridge_interfaces.msg import (
     SystemState,
     IOInputState,
     TagDetectionArray,
+    FusedPose,
 )
 try:
     from bridge_interfaces.msg import VisionDetectionArray
@@ -317,6 +318,7 @@ class Robot:
         self._odom_param_pub = node.create_publisher(SysOdomParamSet, '/sys_odom_param_set', 10)
         self._odom_pub     = node.create_publisher(SysOdomReset,   '/sys_odom_reset',   10)
         # self._fused_kin_pub = node.create_publisher(SensorKinematics, '/fused_kinematics', 10)
+        self._pub_fused_pose = node.create_publisher(FusedPose,    '/fused_pose',       10)
 
         # ── Subscriptions ─────────────────────────────────────────────────────
         node.create_subscription(SystemState,      '/sys_state',         self._on_sys_state,   10)
@@ -489,6 +491,16 @@ class Robot:
             f"fused=({_raw_fused[0]:.1f}, {_raw_fused[1]:.1f}) mm",
             throttle_duration_sec=0.5,
         )
+
+        # Publish fused pose — gps_fresh captured from inside the lock above.
+        _fp = FusedPose()
+        _fp.header.stamp = self._node.get_clock().now().to_msg()
+        _fp.x     = float(_raw_fused[0])
+        _fp.y     = float(_raw_fused[1])
+        _fp.theta = float(self._fused_theta)
+        _fp.gps_active = bool(gps_fresh)
+        self._pub_fused_pose.publish(_fp)
+
         self._pose_event.set()
         self._pose_event.clear()
 
