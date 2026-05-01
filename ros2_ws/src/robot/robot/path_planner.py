@@ -234,6 +234,78 @@ class APFPlanner(PathPlanner):
             return []
         return list(self._obstacle_provider())
 
+    def navigate_to_goal(
+        self,
+        pose: tuple[float, float, float],
+        goal: tuple[float, float],
+        obstacles: np.ndarray,
+    ) -> tuple[float, float]:
+        """
+        Option-B APF: single goal point with caller-supplied world-frame obstacle cloud.
+
+        Parameters
+        ----------
+        pose:
+            ``(x_mm, y_mm, theta_rad)`` — current robot pose in world frame.
+        goal:
+            ``(x_mm, y_mm)`` — target position in world frame. The caller advances
+            this to the next waypoint once the robot is within ``goal_tolerance``.
+        obstacles:
+            ``(N, 2)`` float array of obstacle positions in world-frame mm.
+            Pass ``LidarScan.to_world_frame()`` output directly.
+
+        Returns
+        -------
+        ``(linear_mm_s, angular_rad_s)``
+        """
+        px, py, theta = pose
+        gx, gy = goal
+
+        dx = gx - px
+        dy = gy - py
+        dist_to_goal = math.hypot(dx, dy)
+
+        if dist_to_goal <= self.goal_tolerance:
+            return 0.0, 0.0
+
+        # Attractive force — unit vector scaled by gain, capped to influence range
+        # so the robot doesn't run at full attraction from very far away.
+        attr_scale = self._attr_gain * min(dist_to_goal, self._rep_range)
+        attr_x = attr_scale * dx / dist_to_goal
+        attr_y = attr_scale * dy / dist_to_goal
+
+        # Repulsive force — summed over all obstacles within influence range
+        rep_x = 0.0
+        rep_y = 0.0
+        obs = np.asarray(obstacles)
+        if obs.ndim == 2 and obs.shape[0] > 0:
+            fx = px - obs[:, 0]
+            fy = py - obs[:, 1]
+            dists = np.sqrt(fx * fx + fy * fy)
+            in_range = (dists > 1e-6) & (dists < self._rep_range)
+            if np.any(in_range):
+                d = dists[in_range]
+                mag = self._rep_gain * (1.0 / d - 1.0 / self._rep_range) / (d * d)
+                rep_x = float(np.sum(mag * fx[in_range] / d))
+                rep_y = float(np.sum(mag * fy[in_range] / d))
+
+        force_x = attr_x + rep_x
+        force_y = attr_y + rep_y
+        if math.hypot(force_x, force_y) < 1e-6:
+            return 0.0, 0.0
+
+        desired = math.atan2(force_y, force_x)
+        ang_err = (desired - theta + math.pi) % (2.0 * math.pi) - math.pi
+
+        forward_scale = max(0.0, math.cos(ang_err))
+        goal_scale = min(1.0, dist_to_goal / max(2.0 * self.goal_tolerance, 1.0))
+        linear = self._max_linear * forward_scale * goal_scale
+
+        angular = self._heading_gain * ang_err
+        angular = max(-self._max_angular, min(self._max_angular, angular))
+
+        return linear, angular
+
     def _lookahead_point(
         self, x: float, y: float, waypoints: list[tuple[float, float]]
     ) -> tuple[float, float]:
