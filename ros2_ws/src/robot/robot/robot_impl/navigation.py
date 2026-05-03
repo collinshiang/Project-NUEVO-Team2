@@ -711,9 +711,9 @@ class NavigationMixin:
         y: float,
         velocity: float,
         tolerance: float,
-        leash_length: float | None = None,
-        repulsion_range: float | None = None,
-        target_speed: float | None = None,
+        leash_length_mm: float | None = None,
+        repulsion_range_mm: float | None = None,
+        target_speed_mm_s: float | None = None,
         blocking: bool = True,
         max_angular_rad_s: float = 1.0,
         repulsion_gain: float | None = None,
@@ -736,14 +736,14 @@ class NavigationMixin:
         vel_mm = float(velocity) * self._unit.value
         tolerance_mm = float(tolerance) * self._unit.value
         leash_length_mm = float(
-            self.LAPF_LEASH_LENGTH_MM if leash_length is None else leash_length
-        ) * self._unit.value
+            self.LAPF_LEASH_LENGTH_MM if leash_length_mm is None else leash_length_mm
+        )
         repulsion_range_mm = float(
-            self.LAPF_REPULSION_RANGE_MM if repulsion_range is None else repulsion_range
-        ) * self._unit.value
+            self.LAPF_REPULSION_RANGE_MM if repulsion_range_mm is None else repulsion_range_mm
+        )
         target_speed_mm_s = float(
-            self.LAPF_TARGET_SPEED_MM_S if target_speed is None else target_speed
-        ) * self._unit.value
+            self.LAPF_TARGET_SPEED_MM_S if target_speed_mm_s is None else target_speed_mm_s
+        )
         max_angular = float(max_angular_rad_s)
         repulsion_gain = float(
             self.LAPF_REPULSION_GAIN if repulsion_gain is None else repulsion_gain

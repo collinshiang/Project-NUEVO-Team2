@@ -695,9 +695,9 @@ class RobotApiTests(unittest.TestCase):
                 200.0,
                 velocity=120.0,
                 tolerance=25.0,
-                leash_length=300.0,
-                repulsion_range=500.0,
-                target_speed=220.0,
+                leash_length_mm=300.0,
+                repulsion_range_mm=500.0,
+                target_speed_mm_s=220.0,
                 blocking=False,
                 repulsion_gain=900.0,
                 attraction_gain=1.5,
@@ -720,6 +720,39 @@ class RobotApiTests(unittest.TestCase):
             0.4,
             200.0,
             60.0,
+        )
+
+    def test_lapf_to_goal_keeps_mm_defaults_unscaled_when_unit_is_inch(self) -> None:
+        self.robot.set_unit(self.robot_module.Unit.INCH)
+
+        with mock.patch.object(
+            self.robot,
+            "_start_nav",
+            side_effect=lambda target, blocking, timeout: (target(), "handle")[1],
+        ), mock.patch.object(self.robot, "_nav_lapf_to_goal") as nav_lapf:
+            result = self.robot.lapf_to_goal(
+                10.0,
+                20.0,
+                velocity=3.0,
+                tolerance=1.0,
+                blocking=False,
+            )
+
+        unit_scale = self.robot_module.Unit.INCH.value
+        self.assertEqual(result, "handle")
+        nav_lapf.assert_called_once_with(
+            (10.0 * unit_scale, 20.0 * unit_scale),
+            3.0 * unit_scale,
+            1.0 * unit_scale,
+            self.robot.LAPF_LEASH_LENGTH_MM,
+            self.robot.LAPF_REPULSION_RANGE_MM,
+            self.robot.LAPF_TARGET_SPEED_MM_S,
+            1.0,
+            self.robot.LAPF_REPULSION_GAIN,
+            self.robot.LAPF_ATTRACTION_GAIN,
+            self.robot.LAPF_FORCE_EMA_ALPHA,
+            self.robot.LAPF_INFLATION_MARGIN_MM,
+            self.robot.LAPF_LEASH_HALF_ANGLE_DEG,
         )
 
     def test_publish_virtual_target_emits_active_and_clear_messages(self) -> None:

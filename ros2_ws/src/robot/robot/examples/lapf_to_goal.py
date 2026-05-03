@@ -80,6 +80,38 @@ LEASH_HALF_ANGLE_DEG = None
 STATUS_PRINT_INTERVAL_S = 0.5
 
 
+def resolve_lapf_config(robot: Robot) -> dict[str, float]:
+    return {
+        "leash_length_mm": (
+            robot.LAPF_LEASH_LENGTH_MM if LEASH_LENGTH_MM is None else float(LEASH_LENGTH_MM)
+        ),
+        "repulsion_range_mm": (
+            robot.LAPF_REPULSION_RANGE_MM
+            if REPULSION_RANGE_MM is None else float(REPULSION_RANGE_MM)
+        ),
+        "target_speed_mm_s": (
+            robot.LAPF_TARGET_SPEED_MM_S if TARGET_SPEED_MM_S is None else float(TARGET_SPEED_MM_S)
+        ),
+        "repulsion_gain": (
+            robot.LAPF_REPULSION_GAIN if REPULSION_GAIN is None else float(REPULSION_GAIN)
+        ),
+        "attraction_gain": (
+            robot.LAPF_ATTRACTION_GAIN if ATTRACTION_GAIN is None else float(ATTRACTION_GAIN)
+        ),
+        "force_ema_alpha": (
+            robot.LAPF_FORCE_EMA_ALPHA if FORCE_EMA_ALPHA is None else float(FORCE_EMA_ALPHA)
+        ),
+        "inflation_margin_mm": (
+            robot.LAPF_INFLATION_MARGIN_MM
+            if INFLATION_MARGIN_MM is None else float(INFLATION_MARGIN_MM)
+        ),
+        "leash_half_angle_deg": (
+            robot.LAPF_LEASH_HALF_ANGLE_DEG
+            if LEASH_HALF_ANGLE_DEG is None else float(LEASH_HALF_ANGLE_DEG)
+        ),
+    }
+
+
 def configure_robot(robot: Robot) -> None:
     robot.set_unit(POSITION_UNIT)
     robot.set_odometry_parameters(
@@ -160,27 +192,41 @@ def print_status(robot: Robot) -> None:
     else:
         vt_summary = f" vt=({virtual_target[0]:6.0f}, {virtual_target[1]:6.0f}) mm"
 
+    if obstacle_tracks:
+        nearest_boundary_mm = min(
+            max(
+                0.0,
+                ((float(track["x"]) - x) ** 2 + (float(track["y"]) - y) ** 2) ** 0.5
+                - float(track["radius"]),
+            )
+            for track in obstacle_tracks
+        )
+        track_summary = f" tracked={len(obstacle_tracks)} nearest_track={nearest_boundary_mm:.0f} mm"
+    else:
+        track_summary = " tracked=0"
+
     print(
         f"  {label}=({x:6.0f}, {y:6.0f}) mm  θ={theta:5.1f}°"
-        f"{vt_summary} tracked={len(obstacle_tracks)}"
+        f"{vt_summary}{track_summary}"
     )
 
 
 def start_goal(robot: Robot):
+    cfg = resolve_lapf_config(robot)
     return robot.lapf_to_goal(
         GOAL_MM[0],
         GOAL_MM[1],
         velocity=VELOCITY_MM_S,
         tolerance=TOLERANCE_MM,
-        leash_length=LEASH_LENGTH_MM,
-        repulsion_range=REPULSION_RANGE_MM,
-        target_speed=TARGET_SPEED_MM_S,
+        leash_length_mm=cfg["leash_length_mm"],
+        repulsion_range_mm=cfg["repulsion_range_mm"],
+        target_speed_mm_s=cfg["target_speed_mm_s"],
         max_angular_rad_s=MAX_ANGULAR_RAD_S,
-        repulsion_gain=REPULSION_GAIN,
-        attraction_gain=ATTRACTION_GAIN,
-        force_ema_alpha=FORCE_EMA_ALPHA,
-        inflation_margin_mm=INFLATION_MARGIN_MM,
-        leash_half_angle_deg=LEASH_HALF_ANGLE_DEG,
+        repulsion_gain=cfg["repulsion_gain"],
+        attraction_gain=cfg["attraction_gain"],
+        force_ema_alpha=cfg["force_ema_alpha"],
+        inflation_margin_mm=cfg["inflation_margin_mm"],
+        leash_half_angle_deg=cfg["leash_half_angle_deg"],
         blocking=False,
     )
 
@@ -202,20 +248,29 @@ def run(robot: Robot) -> None:
             start_robot(robot)
             reset_mission_pose(robot)
             show_idle_leds(robot)
+            lapf_cfg = resolve_lapf_config(robot)
             print("[FSM] IDLE — press BTN_1 to start LAPF goal, BTN_2 to cancel")
             print(f"[CFG] goal={GOAL_MM} velocity={VELOCITY_MM_S:.0f} mm/s tolerance={TOLERANCE_MM:.0f} mm")
             print(
-                f"[CFG] LAPF defaults: leash={robot.LAPF_LEASH_LENGTH_MM:.0f} mm "
-                f"half_angle={robot.LAPF_LEASH_HALF_ANGLE_DEG:.0f}° "
-                f"target_speed={robot.LAPF_TARGET_SPEED_MM_S:.0f} mm/s "
-                f"repulsion_range={robot.LAPF_REPULSION_RANGE_MM:.0f} mm "
-                f"inflation={robot.LAPF_INFLATION_MARGIN_MM:.0f} mm"
+                f"[CFG] LAPF: leash={lapf_cfg['leash_length_mm']:.0f} mm "
+                f"half_angle={lapf_cfg['leash_half_angle_deg']:.0f}° "
+                f"target_speed={lapf_cfg['target_speed_mm_s']:.0f} mm/s "
+                f"repulsion_range={lapf_cfg['repulsion_range_mm']:.0f} mm "
+                f"repulsion_gain={lapf_cfg['repulsion_gain']:.0f} "
+                f"attraction_gain={lapf_cfg['attraction_gain']:.2f} "
+                f"force_ema_alpha={lapf_cfg['force_ema_alpha']:.2f} "
+                f"inflation={lapf_cfg['inflation_margin_mm']:.0f} mm"
             )
             if ENABLE_LIDAR:
                 print(
                     f"[CFG] lidar mount=({LIDAR_MOUNT_X_MM:.0f}, {LIDAR_MOUNT_Y_MM:.0f}) mm "
                     f"theta={LIDAR_MOUNT_THETA_DEG:.1f}° filter={LIDAR_RANGE_MIN_MM:.0f}-"
                     f"{LIDAR_RANGE_MAX_MM:.0f} mm fov={LIDAR_FOV_DEG}"
+                )
+                print(
+                    f"[CFG] tracker ttl={robot.OBSTACLE_TRACK_TTL_S:.1f}s "
+                    f"max_tracks={robot.OBSTACLE_TRACK_MAX_TRACKS} "
+                    f"planner_tracks={robot.LAPF_MAX_PLANNER_TRACKS}"
                 )
             if ENABLE_GPS:
                 print(
