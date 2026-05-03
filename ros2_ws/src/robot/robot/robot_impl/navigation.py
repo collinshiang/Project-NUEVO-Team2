@@ -527,10 +527,16 @@ class NavigationMixin:
         blocking: bool = True,
         timeout: float = None,
     ) -> MotionHandle:
-        """Navigate forward by distance along the robot's current heading."""
+        """Drive straight forward by distance along the robot's current heading."""
         distance = self._require_positive_float("distance", distance)
-        return self._move_along_heading(distance, velocity, tolerance=tolerance,
-                                        blocking=blocking, timeout=timeout)
+        dist_mm  = distance  * self._unit.value
+        vel_mm   = velocity  * self._unit.value
+        tol_mm   = tolerance * self._unit.value
+
+        def target():
+            self._nav_drive_straight(dist_mm, vel_mm, tol_mm)
+
+        return self._start_nav(target, blocking, timeout)
 
     def move_backward(
         self,
@@ -540,10 +546,16 @@ class NavigationMixin:
         blocking: bool = True,
         timeout: float = None,
     ) -> MotionHandle:
-        """Navigate backward by distance along the robot's current heading."""
+        """Drive straight backward by distance along the robot's current heading."""
         distance = self._require_positive_float("distance", distance)
-        return self._move_along_heading(-distance, velocity, tolerance=tolerance,
-                                        blocking=blocking, timeout=timeout)
+        dist_mm  = distance  * self._unit.value
+        vel_mm   = velocity  * self._unit.value
+        tol_mm   = tolerance * self._unit.value
+
+        def target():
+            self._nav_drive_straight(-dist_mm, vel_mm, tol_mm)
+
+        return self._start_nav(target, blocking, timeout)
 
     def turn_to(
         self,
@@ -771,6 +783,57 @@ class NavigationMixin:
         dy = math.sin(cur_theta_rad) * signed_distance
         return self.move_to(cur_x + dx, cur_y + dy, velocity,
                             tolerance=tolerance, blocking=blocking, timeout=timeout)
+
+    def _nav_drive_straight(
+        self,
+        signed_distance_mm: float,
+        velocity_mm: float,
+        tolerance_mm: float,
+        heading_kp: float = 3.0,
+        update_hz: float = float(DEFAULT_NAV_HZ),
+    ) -> None:
+        """
+        Navigation thread body: drive straight along the heading at call time.
+
+        Uses a P-controller on heading error to resist drift — no path planner,
+        no lookahead, no steering toward a world-frame target.  This guarantees
+        the robot reverses straight back rather than arcing toward a goal point.
+
+        signed_distance_mm > 0 → forward, < 0 → backward.
+        velocity_mm is always positive; direction is taken from the sign.
+        """
+        x0_mm, y0_mm, theta0_rad = self._get_pose_mm()
+        direction = 1 if signed_distance_mm >= 0 else -1
+        dt = 1.0 / update_hz
+
+        while not self._nav_cancel.is_set():
+            x_mm, y_mm, theta_rad = self._get_pose_mm()
+
+            # Signed distance traveled along the initial heading axis
+            traveled = ((x_mm - x0_mm) * math.cos(theta0_rad)
+                        + (y_mm - y0_mm) * math.sin(theta0_rad))
+            remaining = signed_distance_mm - traveled
+
+            if abs(remaining) <= tolerance_mm:
+                self.stop()
+                return
+
+            # Heading error: positive when robot has turned CCW from the initial heading
+            heading_err = _wrap_angle(theta0_rad - theta_rad)
+
+            # For forward motion, correct CCW drift by turning CW (negative angular).
+            # For backward motion, flip the correction sense because the rear leads.
+            angular = direction * heading_kp * heading_err
+
+            # Decelerate smoothly within 3× tolerance, but keep enough speed to move.
+            speed = min(velocity_mm, max(velocity_mm * 0.25, abs(remaining) * 2.0))
+            linear = direction * speed
+
+            self._send_body_velocity_mm(linear, angular)
+            if not self._sleep_with_cancel(dt):
+                break
+
+        self.stop()
 
     def _nav_follow_purepursuit_path(
         self,
