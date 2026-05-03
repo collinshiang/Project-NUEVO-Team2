@@ -133,13 +133,6 @@ def start_robot(robot: Robot) -> None:
     robot.set_state(FirmwareState.RUNNING)
 
 
-def reset_mission_pose(robot: Robot) -> None:
-    robot.reset_odometry()
-    if not robot.wait_for_odometry_reset(timeout=2.0):
-        print("[warn] odometry reset not confirmed within 2.0s; continuing with latest pose")
-        robot.wait_for_pose_update(timeout=0.5)
-
-
 def show_idle_leds(robot: Robot) -> None:
     robot.set_led(LED.ORANGE, 200)
     robot.set_led(LED.GREEN, 0)
@@ -172,42 +165,6 @@ def print_status(robot: Robot, label: str) -> None:
     print(f"  [{label}] odom=({ox:6.0f}, {oy:6.0f}) mm  θ={otheta:5.1f}°")
 
 
-def run_blocking_sequence(robot: Robot) -> None:
-    print("[FSM] BLOCKING_TURN_LEFT")
-    robot.turn_by(
-        delta_deg=TURN_DEGREES,
-        blocking=True,
-        tolerance_deg=TURN_TOLERANCE_DEG,
-    )
-    print_status(robot, "blocking turn left done")
-
-    print("[FSM] BLOCKING_TURN_RIGHT")
-    robot.turn_by(
-        delta_deg=-TURN_DEGREES,
-        blocking=True,
-        tolerance_deg=TURN_TOLERANCE_DEG,
-    )
-    print_status(robot, "blocking turn right done")
-
-    print("[FSM] BLOCKING_MOVE_FORWARD")
-    robot.move_forward(
-        distance=FORWARD_DISTANCE_MM,
-        velocity=DRIVE_VELOCITY_MM_S,
-        tolerance=DRIVE_TOLERANCE_MM,
-        blocking=True,
-    )
-    print_status(robot, "blocking move forward done")
-
-    print("[FSM] BLOCKING_MOVE_BACKWARD")
-    robot.move_backward(
-        distance=FORWARD_DISTANCE_MM,
-        velocity=DRIVE_VELOCITY_MM_S,
-        tolerance=DRIVE_TOLERANCE_MM,
-        blocking=True,
-    )
-    print_status(robot, "blocking move backward done")
-
-
 def run(robot: Robot) -> None:
     configure_robot(robot)
 
@@ -228,7 +185,10 @@ def run(robot: Robot) -> None:
 
         elif state == "INIT":
             start_robot(robot)
-            reset_mission_pose(robot)
+            robot.reset_odometry()
+            if not robot.wait_for_odometry_reset(timeout=2.0):
+                print("[warn] odometry reset not confirmed within 2.0s; continuing with latest pose")
+                robot.wait_for_pose_update(timeout=0.5)
             show_idle_leds(robot)
             print("[FSM] IDLE — press BTN_1 to start")
             print("[FSM] BTN_2 cancels only the non-blocking pass")
@@ -251,7 +211,10 @@ def run(robot: Robot) -> None:
 
         elif state == "IDLE":
             if robot.was_button_pressed(Button.BTN_1):
-                reset_mission_pose(robot)
+                robot.reset_odometry()
+                if not robot.wait_for_odometry_reset(timeout=2.0):
+                    print("[warn] odometry reset not confirmed within 2.0s; continuing with latest pose")
+                    robot.wait_for_pose_update(timeout=0.5)
                 show_running_leds(robot)
                 print("[FSM] NON_BLOCKING_TURN_LEFT")
                 motion_handle = robot.turn_by(
@@ -307,12 +270,52 @@ def run(robot: Robot) -> None:
                 state = "START_BLOCKING_PASS"
 
         elif state == "START_BLOCKING_PASS":
-            reset_mission_pose(robot)
+            robot.reset_odometry()
+            if not robot.wait_for_odometry_reset(timeout=2.0):
+                print("[warn] odometry reset not confirmed within 2.0s; continuing with latest pose")
+                robot.wait_for_pose_update(timeout=0.5)
             print("[FSM] BLOCKING_PASS")
             state = "BLOCKING_PASS"
 
         elif state == "BLOCKING_PASS":
-            run_blocking_sequence(robot)
+            print("[FSM] BLOCKING_TURN_LEFT")
+            robot.turn_by(
+                delta_deg=TURN_DEGREES,
+                blocking=True,
+                tolerance_deg=TURN_TOLERANCE_DEG,
+            )
+            print_status(robot, "blocking turn left done; sleeping for 1 second")
+            time.sleep(1.0)
+            
+            print("[FSM] BLOCKING_TURN_RIGHT")
+            robot.turn_by(
+                delta_deg=-TURN_DEGREES,
+                blocking=True,
+                tolerance_deg=TURN_TOLERANCE_DEG,
+            )
+            print_status(robot, "blocking turn right done; sleeping for 1 second")
+            time.sleep(1.0)
+            
+            print("[FSM] BLOCKING_MOVE_FORWARD")
+            robot.move_forward(
+                distance=FORWARD_DISTANCE_MM,
+                velocity=DRIVE_VELOCITY_MM_S,
+                tolerance=DRIVE_TOLERANCE_MM,
+                blocking=True,
+            )
+            print_status(robot, "blocking move forward done; sleeping for 1 second")
+            time.sleep(1.0)
+            
+            print("[FSM] BLOCKING_MOVE_BACKWARD")
+            robot.move_backward(
+                distance=FORWARD_DISTANCE_MM,
+                velocity=DRIVE_VELOCITY_MM_S,
+                tolerance=DRIVE_TOLERANCE_MM,
+                blocking=True,
+            )
+            print_status(robot, "blocking move backward done; sleeping for 1 second")
+            time.sleep(1.0)
+            
             robot.stop()
             show_idle_leds(robot)
             print("[FSM] DONE — press BTN_1 to run again")
@@ -322,7 +325,10 @@ def run(robot: Robot) -> None:
         elif state == "DONE":
             if robot.was_button_pressed(Button.BTN_1):
                 show_running_leds(robot)
-                reset_mission_pose(robot)
+                robot.reset_odometry()
+                if not robot.wait_for_odometry_reset(timeout=2.0):
+                    print("[warn] odometry reset not confirmed within 2.0s; continuing with latest pose")
+                    robot.wait_for_pose_update(timeout=0.5)
                 print("[FSM] NON_BLOCKING_TURN_LEFT")
                 motion_handle = robot.turn_by(
                     delta_deg=TURN_DEGREES,
