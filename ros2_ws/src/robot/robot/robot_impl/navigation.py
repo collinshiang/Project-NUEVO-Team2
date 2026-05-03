@@ -887,21 +887,45 @@ class NavigationMixin:
         repulsion_gain: float,
         update_hz: float = float(DEFAULT_NAV_HZ),
     ) -> None:
-        """Navigation thread body: APF path following with robot-frame obstacles."""
+        """Navigation thread body: APF path following via sequential single-goal APF.
+
+        ``APFPlanner`` itself is a single-goal planner. This wrapper advances
+        through the remaining waypoint list and asks APF for the velocity
+        command toward the current goal waypoint while avoiding the live lidar
+        obstacle cloud.
+        """
         from robot.path_planner import APFPlanner
         planner = APFPlanner(
-            lookahead_dist=lookahead_mm,
             max_linear=max_vel_mm,
             max_angular=max_angular_rad_s,
             repulsion_gain=repulsion_gain,
             repulsion_range=repulsion_range_mm,
             goal_tolerance=tolerance_mm,
-            obstacle_provider=self._get_obstacles_mm,
         )
-        self._nav_follow_path(
-            waypoints_mm, planner, max_vel_mm, advance_radius_mm, tolerance_mm,
-            update_hz=update_hz,
-        )
+        remaining_path = list(waypoints_mm)
+        dt = 1.0 / update_hz
+
+        while not self._nav_cancel.is_set():
+            x_mm, y_mm, theta_rad = self._get_pose_mm()
+            remaining_path = self._advance_remaining_path(
+                remaining_path, x_mm, y_mm, advance_radius_mm
+            )
+
+            goal_x_mm, goal_y_mm = remaining_path[0]
+            if len(remaining_path) == 1 and _dist2d(x_mm, y_mm, goal_x_mm, goal_y_mm) <= tolerance_mm:
+                self.stop()
+                return
+
+            linear_mm, angular_rad_s = planner.navigate_to_goal(
+                (x_mm, y_mm, theta_rad),
+                (goal_x_mm, goal_y_mm),
+                self._get_obstacles_mm(),
+            )
+            self._send_body_velocity_mm(linear_mm, angular_rad_s)
+            if not self._sleep_with_cancel(dt):
+                break
+
+        self.stop()
 
     def _nav_follow_path(
         self,

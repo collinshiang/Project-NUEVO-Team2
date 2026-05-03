@@ -10,6 +10,7 @@ import types
 import unittest
 from unittest import mock
 from pathlib import Path
+import numpy as np
 
 
 class FakePublisher:
@@ -634,6 +635,40 @@ class RobotApiTests(unittest.TestCase):
             1.0,
             500.0,
         )
+
+    def test_nav_follow_apf_path_uses_single_goal_planner(self) -> None:
+        planner_instance = mock.Mock()
+        planner_instance.navigate_to_goal.return_value = (42.0, -0.5)
+        sent_commands: list[tuple[float, float]] = []
+
+        self.robot._get_pose_mm = lambda: (0.0, 0.0, 0.0)
+        self.robot._get_obstacles_mm = lambda: np.array([[100.0, 0.0]], dtype=float)
+        self.robot._send_body_velocity_mm = lambda linear, angular: sent_commands.append((linear, angular))
+        self.robot._sleep_with_cancel = lambda _seconds: False
+        self.robot.stop = lambda: None
+        self.robot._nav_cancel.clear()
+
+        with mock.patch("robot.path_planner.APFPlanner", return_value=planner_instance) as planner_cls:
+            self.robot._nav_follow_apf_path(
+                [(500.0, 0.0), (1000.0, 0.0)],
+                100.0,
+                250.0,
+                50.0,
+                20.0,
+                150.0,
+                1.2,
+                800.0,
+            )
+
+        planner_cls.assert_called_once_with(
+            max_linear=100.0,
+            max_angular=1.2,
+            repulsion_gain=800.0,
+            repulsion_range=150.0,
+            goal_tolerance=20.0,
+        )
+        planner_instance.navigate_to_goal.assert_called_once()
+        self.assertEqual(sent_commands, [(42.0, -0.5)])
 
     def test_unit_dependent_navigation_parameters_must_be_explicit(self) -> None:
         with self.assertRaises(TypeError):
