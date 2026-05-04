@@ -261,6 +261,8 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         self._gps_offset_y_mm:     float = 0.0
         self._tag_body_offset_x_mm: float = self.TAG_X_OFFSET_MM
         self._tag_body_offset_y_mm: float = self.TAG_Y_OFFSET_MM
+        self._gps_paused:          bool  = False
+        self._gps_subscribed:      bool  = False
 
         # ── Lidar ─────────────────────────────────────────────────────────────
         self._lidar_mount_x_mm:      float = self.LIDAR_MOUNT_X_MM

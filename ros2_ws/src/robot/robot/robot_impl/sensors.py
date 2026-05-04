@@ -79,12 +79,19 @@ class SensorsMixin:
 
     def enable_gps(self) -> None:
         """Subscribe to /tag_detections and start GPS position fusion."""
-        self._node.create_subscription(
-            TagDetectionArray,
-            '/tag_detections',
-            self._on_tag_detections,
-            10,
-        )
+        if not self._gps_subscribed:
+            self._node.create_subscription(
+                TagDetectionArray,
+                '/tag_detections',
+                self._on_tag_detections,
+                10,
+            )
+            self._gps_subscribed = True
+        self._gps_paused = False
+
+    def disable_gps(self) -> None:
+        """Pause GPS updates. Call enable_gps() to resume."""
+        self._gps_paused = True
 
     def enable_imu(self) -> None:
         """Subscribe to /sensor_imu and start orientation fusion."""
@@ -161,6 +168,8 @@ class SensorsMixin:
 
     def _on_tag_detections(self, msg: TagDetectionArray) -> None:
         """Cache world-frame robot position from the tracked ArUco tag (metres → mm)."""
+        if self._gps_paused:
+            return
         for det in msg.detections:
             if self._tracked_tag_id == -1 or det.tag_id == self._tracked_tag_id:
                 with self._lock:

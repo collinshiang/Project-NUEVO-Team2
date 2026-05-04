@@ -56,9 +56,8 @@ TAG_ID = -1  # IMPORTANT: set to the ArUco marker ID on your robot
 # GPS_POSITION_ALPHA     — how strongly each GPS fix pulls the fused position.
 #                          0.05 = smooth/slow, 0.10 = default, 0.30 = aggressive
 #
-# ENABLE_GPS_TANGENT_HEADING — derive heading from GPS trajectory instead of
-#                          IMU. Useful when IMU is unavailable. Set False and
-#                          call robot.enable_imu() to use IMU instead.
+# ENABLE_GPS_TANGENT_HEADING — derive heading from GPS trajectory direction.
+#                          False = pure odometry heading (default).
 #
 # GPS_TANGENT_ALPHA      — how strongly GPS tangent corrects odometry heading.
 #                          0.05 = gentle, 0.15 = default, 0.30 = aggressive
@@ -71,7 +70,7 @@ TAG_ID = -1  # IMPORTANT: set to the ArUco marker ID on your robot
 # ---------------------------------------------------------------------------
 
 GPS_POSITION_ALPHA           = 0.10
-ENABLE_GPS_TANGENT_HEADING   = True
+ENABLE_GPS_TANGENT_HEADING   = False
 GPS_TANGENT_ALPHA            = 0.15
 GPS_TANGENT_MIN_DISPLACEMENT_MM = 200.0
 
