@@ -3,7 +3,14 @@ sensor_fusion.py — pluggable sensor fusion strategies
 ======================================================
 Orientation strategies share this interface::
 
-    fused_theta_rad = strategy.update(odom_theta, mag_heading, linear_vel, angular_vel)
+    fused_theta_rad = strategy.update(
+        odom_theta,
+        mag_heading,
+        linear_vel,
+        angular_vel,
+        fused_x=None,
+        fused_y=None,
+    )
 
 Position strategies share this interface::
 
@@ -70,7 +77,11 @@ class OrientationComplementaryFilter(SensorFusion):
         mag_heading: float | None,
         linear_vel: float,
         angular_vel: float,
+        fused_x: float | None = None,
+        fused_y: float | None = None,
     ) -> float:
+        # fused_x / fused_y are accepted for interface compatibility with
+        # GPS-tangent-based orientation fusion and are intentionally ignored.
         if mag_heading is None:
             return odom_theta
         return odom_theta + self.alpha * _wrap(mag_heading - odom_theta)
@@ -237,4 +248,3 @@ class PositionComplementaryFilter(SensorFusion):
                 self._anchor_y_mm + (odom_y - self._odom_y_at_anchor),
             )
         return odom_x, odom_y
-
