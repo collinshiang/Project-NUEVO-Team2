@@ -66,49 +66,29 @@ VELOCITY_MM_S = 150.0
 TOLERANCE_MM = 50.0
 MAX_ANGULAR_RAD_S = 1.0
 
-# Default LAPF tuning now lives on Robot. Keep these as `None` to use the
-# current runtime defaults, or set them explicitly here while tuning.
-LEASH_LENGTH_MM = None
-REPULSION_RANGE_MM = None
-TARGET_SPEED_MM_S = None
-REPULSION_GAIN = None
-ATTRACTION_GAIN = None
-FORCE_EMA_ALPHA = None
-INFLATION_MARGIN_MM = None
-LEASH_HALF_ANGLE_DEG = None
+# Edit these directly while tuning LAPF behavior.
+LEASH_LENGTH_MM = 400.0
+REPULSION_RANGE_MM = 700.0
+TARGET_SPEED_MM_S = 200.0
+REPULSION_GAIN = 800.0
+ATTRACTION_GAIN = 1.0
+FORCE_EMA_ALPHA = 0.35
+INFLATION_MARGIN_MM = 200.0
+LEASH_HALF_ANGLE_DEG = 60.0
 
 STATUS_PRINT_INTERVAL_S = 0.5
 
 
-def resolve_lapf_config(robot: Robot) -> dict[str, float]:
+def resolve_lapf_config() -> dict[str, float]:
     return {
-        "leash_length_mm": (
-            robot.LAPF_LEASH_LENGTH_MM if LEASH_LENGTH_MM is None else float(LEASH_LENGTH_MM)
-        ),
-        "repulsion_range_mm": (
-            robot.LAPF_REPULSION_RANGE_MM
-            if REPULSION_RANGE_MM is None else float(REPULSION_RANGE_MM)
-        ),
-        "target_speed_mm_s": (
-            robot.LAPF_TARGET_SPEED_MM_S if TARGET_SPEED_MM_S is None else float(TARGET_SPEED_MM_S)
-        ),
-        "repulsion_gain": (
-            robot.LAPF_REPULSION_GAIN if REPULSION_GAIN is None else float(REPULSION_GAIN)
-        ),
-        "attraction_gain": (
-            robot.LAPF_ATTRACTION_GAIN if ATTRACTION_GAIN is None else float(ATTRACTION_GAIN)
-        ),
-        "force_ema_alpha": (
-            robot.LAPF_FORCE_EMA_ALPHA if FORCE_EMA_ALPHA is None else float(FORCE_EMA_ALPHA)
-        ),
-        "inflation_margin_mm": (
-            robot.LAPF_INFLATION_MARGIN_MM
-            if INFLATION_MARGIN_MM is None else float(INFLATION_MARGIN_MM)
-        ),
-        "leash_half_angle_deg": (
-            robot.LAPF_LEASH_HALF_ANGLE_DEG
-            if LEASH_HALF_ANGLE_DEG is None else float(LEASH_HALF_ANGLE_DEG)
-        ),
+        "leash_length_mm": float(LEASH_LENGTH_MM),
+        "repulsion_range_mm": float(REPULSION_RANGE_MM),
+        "target_speed_mm_s": float(TARGET_SPEED_MM_S),
+        "repulsion_gain": float(REPULSION_GAIN),
+        "attraction_gain": float(ATTRACTION_GAIN),
+        "force_ema_alpha": float(FORCE_EMA_ALPHA),
+        "inflation_margin_mm": float(INFLATION_MARGIN_MM),
+        "leash_half_angle_deg": float(LEASH_HALF_ANGLE_DEG),
     }
 
 
@@ -212,7 +192,7 @@ def print_status(robot: Robot) -> None:
 
 
 def start_goal(robot: Robot):
-    cfg = resolve_lapf_config(robot)
+    cfg = resolve_lapf_config()
     return robot.lapf_to_goal(
         GOAL_MM[0],
         GOAL_MM[1],
@@ -248,7 +228,7 @@ def run(robot: Robot) -> None:
             start_robot(robot)
             reset_mission_pose(robot)
             show_idle_leds(robot)
-            lapf_cfg = resolve_lapf_config(robot)
+            lapf_cfg = resolve_lapf_config()
             print("[FSM] IDLE — press BTN_1 to start LAPF goal, BTN_2 to cancel")
             print(f"[CFG] goal={GOAL_MM} velocity={VELOCITY_MM_S:.0f} mm/s tolerance={TOLERANCE_MM:.0f} mm")
             print(
