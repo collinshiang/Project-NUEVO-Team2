@@ -4,16 +4,28 @@ from collections.abc import Callable
 import math
 import time
 import threading
-from enum import Enum, IntEnum
 
 from rclpy.node import Node
 
 import time as _time
 
-from robot.sensor_fusion import OrientationComplementaryFilter, PositionComplementaryFilter, SensorFusion
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from robot.sensor_fusion import GpsTangentOrientationFusion, OrientationComplementaryFilter, PositionComplementaryFilter, SensorFusion
+try:
+    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+except (ImportError, ModuleNotFoundError):
+    class ReliabilityPolicy:
+        BEST_EFFORT = "best_effort"
+
+    class HistoryPolicy:
+        KEEP_LAST = "keep_last"
+
+    class QoSProfile:
+        def __init__(self, reliability=None, history=None, depth=1) -> None:
+            self.reliability = reliability
+            self.history = history
+            self.depth = depth
+
 import numpy as np
-import matplotlib.pyplot as plt
 
 from bridge_interfaces.msg import (
     DCEnable,
@@ -29,7 +41,6 @@ from bridge_interfaces.msg import (
     IOSetLed,
     IOSetNeopixel,
     IOOutputState,
-    SensorImu,
     SensorKinematics,
     ServoEnable,
     ServoSet,
@@ -51,10 +62,32 @@ from bridge_interfaces.msg import (
     SystemPower,
     SystemState,
     IOInputState,
+    FusedPose,
+    LidarWorldPoints,
+    SensorImu,
     TagDetectionArray,
+    TrackedObstacleArray,
+    VirtualTarget,
 )
+try:
+    from bridge_interfaces.msg import VisionDetectionArray
+except (ImportError, ModuleNotFoundError):
+    class VisionDetectionArray:  # test-stub fallback
+        detections = ()
+        image_width = 0
+        image_height = 0
+
 from bridge_interfaces.srv import SetFirmwareState
-from sensor_msgs.msg import LaserScan
+try:
+    from sensor_msgs.msg import LaserScan
+except (ImportError, ModuleNotFoundError):
+    class LaserScan:  # test-stub fallback
+        ranges = ()
+        angle_min = 0.0
+        angle_max = 0.0
+        angle_increment = 0.0
+        range_min = 0.0
+        range_max = 0.0
 
 from robot.hardware_map import (
     BUTTON_COUNT,
@@ -62,79 +95,40 @@ from robot.hardware_map import (
     DCPidLoop,
     DEFAULT_NAV_HZ,
     LEDMode,
+    LIDAR_FOV_DEG,
+    LIDAR_MOUNT_THETA_DEG,
+    LIDAR_MOUNT_X_MM,
+    LIDAR_MOUNT_Y_MM,
+    LIDAR_RANGE_MAX_MM,
+    LIDAR_RANGE_MIN_MM,
     LIMIT_COUNT,
+    INITIAL_THETA_DEG as HW_INITIAL_THETA_DEG,
+    LEFT_WHEEL_DIR_INVERTED as HW_LEFT_WHEEL_DIR_INVERTED,
+    LEFT_WHEEL_MOTOR as HW_LEFT_WHEEL_MOTOR,
     Motor,
+    RIGHT_WHEEL_DIR_INVERTED as HW_RIGHT_WHEEL_DIR_INVERTED,
+    RIGHT_WHEEL_MOTOR as HW_RIGHT_WHEEL_MOTOR,
     StepMoveType,
     StepperMotionState,
+    TAG_BODY_OFFSET_X_MM,
+    TAG_BODY_OFFSET_Y_MM,
+    Unit,
+    WHEEL_BASE as HW_WHEEL_BASE,
+    WHEEL_DIAMETER as HW_WHEEL_DIAMETER,
 )
 
-
-# =============================================================================
-# Public enums
-# =============================================================================
-
-class Unit(Enum):
-    MM   = 1.0   # native firmware units; no conversion needed
-    INCH = 25.4  # 1 inch = 25.4 mm
-    AMERICAN = INCH
-    REST_OF_THE_WORLD = MM
-
-
-class FirmwareState(IntEnum):
-    IDLE    = 1
-    RUNNING = 2
-    ERROR   = 3
-    ESTOP   = 4
-
-
-# =============================================================================
-# MotionHandle  (for high-level base motion)
-# =============================================================================
-
-class MotionHandle:
-    """
-    Handle for a high-level base-motion command.
-
-    This is used by the navigation-style APIs in Robot, such as:
-    - move_to / move_by / move_forward / move_backward
-    - turn_to / turn_by
-    - purepursuit_follow_path / apf_follow_path
-
-    These methods always return a MotionHandle. When blocking=True, the method
-    waits internally before returning the already-finished handle.
-
-    Example:
-        handle = robot.move_to(500, 0, 200, tolerance=15, blocking=False)
-        # ... do other things ...
-        success = handle.wait(timeout=10.0)
-    """
-
-    def __init__(self, finished_event: threading.Event, cancel_event: threading.Event) -> None:
-        self._finished = finished_event
-        self._cancel = cancel_event
-
-    def wait(self, timeout: float = None) -> bool:
-        """Block until motion finishes. Returns True if it finished before timeout."""
-        return self._finished.wait(timeout=timeout)
-
-    def is_finished(self) -> bool:
-        """Non-blocking poll. Returns True if motion has finished."""
-        return self._finished.is_set()
-
-    def is_done(self) -> bool:
-        """Backward-compatible alias for is_finished()."""
-        return self.is_finished()
-
-    def cancel(self) -> None:
-        """Abort this motion command. The robot will stop."""
-        self._cancel.set()
+from robot.robot_impl.hardware import FirmwareState, HardwareMixin
+from robot.obstacle_tracking import ObstacleTracker
+from robot.robot_impl.sensors import SensorsMixin
+from robot.robot_impl.navigation import MotionHandle, NavigationMixin
+from robot.robot_impl.legacy import LegacyMixin
 
 
 # =============================================================================
 # Robot
 # =============================================================================
 
-class Robot:
+class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
     """
     Layer-1 abstraction over all bridge ROS topics and services.
 
@@ -147,40 +141,68 @@ class Robot:
     Servo channels are 1-based (1–16).
     Button IDs are 1-based (1–10). Limit IDs are 1-based (1–8).
 
-    LED IDs and NeoPixel indices follow the current firmware I/O numbering and
-    remain 0-based.
+    Sensor subscriptions are opt-in — call the relevant enable_*() method
+    before using the corresponding API:
+        robot.enable_lidar()   — subscribe to /scan, populate get_obstacles()
+        robot.enable_gps()     — subscribe to /tag_detections, populate GPS fusion
+        robot.enable_imu()     — subscribe to /sensor_imu, populate orientation fusion
+        robot.enable_vision()  — subscribe to /vision/detections, populate get_detections()
 
-    Hardware defaults match firmware/arduino/src/config.h:
+    Hardware defaults match robot/hardware_map.py and firmware/arduino/src/config.h:
         WHEEL_DIAMETER_MM = 74.0
         WHEEL_BASE_MM     = 333.0
         ENCODER_PPR       = 1440  (4× mode)
         DEFAULT_LEFT_WHEEL_MOTOR  = 1
         DEFAULT_RIGHT_WHEEL_MOTOR = 2
         INITIAL_THETA_DEG = 90.0
-        IMU_Z_DOWN        = False  (Z-axis points up, flat side of chip faces up)
-
-    If the IMU is mounted upside-down (Z-axis pointing toward the ground), set
-    IMU_Z_DOWN = True or call set_imu_z_down(True).  The Fusion AHRS on the
-    Arduino will converge to an inverted-attitude quaternion, causing the
-    extracted yaw to be negated; this flag corrects that sign flip in software.
-    The IMU must be re-calibrated after physically flipping the sensor.
+        IMU_Z_DOWN        = False  (Z-axis points up)
     """
 
-    WHEEL_DIAMETER_MM: float = 74.0
-    WHEEL_BASE_MM:     float = 333.0
+    WHEEL_DIAMETER_MM: float = HW_WHEEL_DIAMETER
+    WHEEL_BASE_MM:     float = HW_WHEEL_BASE
     ENCODER_PPR:       int   = 1440
-    INITIAL_THETA_DEG: float = 90.0
+    INITIAL_THETA_DEG: float = HW_INITIAL_THETA_DEG
     IMU_Z_DOWN:        bool  = False
-    DEFAULT_LEFT_WHEEL_MOTOR:  int = int(Motor.DC_M1)
-    DEFAULT_RIGHT_WHEEL_MOTOR: int = int(Motor.DC_M2)
-    DEFAULT_LEFT_WHEEL_DIR_INVERTED: bool = False
-    DEFAULT_RIGHT_WHEEL_DIR_INVERTED: bool = True
-    POSITION_ALPHA = 0.20  # complementary filter GPS weight for position fusion, default 0.10
-    ORIENTATION_ALPHA = 0.0  # complementary filter IMU weight for orientation fusion (IMU is not working well, so default to pure odometry for now)
-    TAG_X_OFFSET_MM = 0.0  # ArUco tag position in robot body frame x (mm, forward)
-    TAG_Y_OFFSET_MM = 0.0  # ArUco tag position in robot body frame y (mm, left)
+    DEFAULT_LEFT_WHEEL_MOTOR:  int = int(HW_LEFT_WHEEL_MOTOR)
+    DEFAULT_RIGHT_WHEEL_MOTOR: int = int(HW_RIGHT_WHEEL_MOTOR)
+    DEFAULT_LEFT_WHEEL_DIR_INVERTED:  bool = HW_LEFT_WHEEL_DIR_INVERTED
+    DEFAULT_RIGHT_WHEEL_DIR_INVERTED: bool = HW_RIGHT_WHEEL_DIR_INVERTED
+    POSITION_ALPHA    = 0.10   # complementary filter GPS weight for position fusion
+    ORIENTATION_ALPHA = 0.0    # complementary filter IMU weight for orientation fusion
+    TAG_X_OFFSET_MM   = TAG_BODY_OFFSET_X_MM   # ArUco tag x in robot body frame (mm, +x = forward)
+    TAG_Y_OFFSET_MM   = TAG_BODY_OFFSET_Y_MM   # ArUco tag y in robot body frame (mm, +y = left)
 
-    # Servo pulse range (standard hobby servo)
+    LIDAR_MOUNT_X_MM:      float = LIDAR_MOUNT_X_MM      # lidar x in robot body frame (mm, +x = forward)
+    LIDAR_MOUNT_Y_MM:      float = LIDAR_MOUNT_Y_MM      # lidar y in robot body frame (mm, +y = left)
+    LIDAR_MOUNT_THETA_DEG: float = LIDAR_MOUNT_THETA_DEG # lidar heading offset relative to robot forward (CCW+)
+
+    LIDAR_RANGE_MIN_MM:  float = LIDAR_RANGE_MIN_MM  # discard lidar returns closer than this (mm)
+    LIDAR_RANGE_MAX_MM:  float = LIDAR_RANGE_MAX_MM  # discard lidar returns farther than this (mm)
+    LIDAR_FOV_MIN_DEG:   float = LIDAR_FOV_DEG[0]    # FOV window min (deg, 0° = robot +x forward, CCW+)
+    LIDAR_FOV_MAX_DEG:   float = LIDAR_FOV_DEG[1]    # FOV window max
+
+    OBSTACLE_TRACK_INPUT_RANGE_MM: float = 1200.0
+    OBSTACLE_TRACK_MAX_INPUT_POINTS: int = 250
+    OBSTACLE_TRACK_CLUSTER_NEIGHBOR_MM: float = 90.0
+    OBSTACLE_TRACK_CLUSTER_MIN_POINTS: int = 3
+    OBSTACLE_TRACK_MAX_DISK_RADIUS_MM: float = 75.0
+    OBSTACLE_TRACK_RADIUS_MARGIN_MM: float = 20.0
+    OBSTACLE_TRACK_ASSOCIATION_DIST_MM: float = 180.0
+    OBSTACLE_TRACK_TTL_S: float = 1.5
+    OBSTACLE_TRACK_MIN_HITS_TO_CONFIRM: int = 2
+    OBSTACLE_TRACK_MAX_TRACKS: int = 12
+    APF_MAX_PLANNER_TRACKS: int = 6
+    APF_TRACK_INPUT_MARGIN_MM: float = 150.0
+    LAPF_MAX_PLANNER_TRACKS: int = 6
+    LAPF_LEASH_LENGTH_MM: float = 400.0
+    LAPF_LEASH_HALF_ANGLE_DEG: float = 60.0
+    LAPF_TARGET_SPEED_MM_S: float = 200.0
+    LAPF_REPULSION_RANGE_MM: float = 700.0
+    LAPF_REPULSION_GAIN: float = 800.0
+    LAPF_ATTRACTION_GAIN: float = 1.0
+    LAPF_FORCE_EMA_ALPHA: float = 0.35
+    LAPF_INFLATION_MARGIN_MM: float = 200.0
+
     _SERVO_MIN_US: int = 1000
     _SERVO_MAX_US: int = 2000
     _SHUTDOWN_SETTLE_S: float = 0.10
@@ -200,10 +222,12 @@ class Robot:
         self._encoder_ppr      = encoder_ppr
         self._ticks_per_mm     = encoder_ppr / (math.pi * wheel_diameter_mm)
         self._initial_theta_deg = self.INITIAL_THETA_DEG
-        self._left_wheel_motor = self.DEFAULT_LEFT_WHEEL_MOTOR
+        self._left_wheel_motor  = self.DEFAULT_LEFT_WHEEL_MOTOR
         self._right_wheel_motor = self.DEFAULT_RIGHT_WHEEL_MOTOR
-        self._left_wheel_dir_inverted = self.DEFAULT_LEFT_WHEEL_DIR_INVERTED
+        self._left_wheel_dir_inverted  = self.DEFAULT_LEFT_WHEEL_DIR_INVERTED
         self._right_wheel_dir_inverted = self.DEFAULT_RIGHT_WHEEL_DIR_INVERTED
+        self._odom_user_configured = False
+        self._odom_confirm_event = threading.Event()
         self._lock             = threading.Lock()
 
         # ── Cached firmware state ─────────────────────────────────────────────
@@ -219,42 +243,84 @@ class Robot:
         self._servo_state: ServoStateAll = None
         self._io_output_state: IOOutputState = None
         self._imu:        SensorImu      = None
-        self._imu_z_down:          bool        = self.IMU_Z_DOWN
-        self._ahrs_heading:        float | None = None   # absolute heading from AHRS (rad)
-        self._odom_reset_pending:  bool       = False  # True between reset_odometry() call and firmware-confirmed reset tick
-        self._fused_theta:        float      = math.radians(self.INITIAL_THETA_DEG)  # fusion strategy output (rad)
-        self._orientation_fusion:  OrientationComplementaryFilter          = OrientationComplementaryFilter(alpha=self.ORIENTATION_ALPHA)
-        self._pose:    tuple = (0.0, 0.0, 0.0)  # x_mm, y_mm, theta_rad (raw odometry)
+        self._imu_z_down:         bool        = self.IMU_Z_DOWN
+        self._ahrs_heading:       float | None = None
+        self._odom_reset_pending: bool       = False
+        self._fused_theta:        float      = math.radians(self.INITIAL_THETA_DEG)
+        self._orientation_fusion: OrientationComplementaryFilter = OrientationComplementaryFilter(alpha=self.ORIENTATION_ALPHA)
+        self._fusion: SensorFusion = self._orientation_fusion
+        self._pose:    tuple = (0.0, 0.0, 0.0)   # x_mm, y_mm, theta_rad (raw odometry)
+
         # ── GPS position fusion ───────────────────────────────────────────────
-        self._tracked_tag_id:    int         = -1    # tag to track (-1 = any)
-        self._gps_x_mm:          float       = 0.0  # latest GPS x in mm (arena frame)
-        self._gps_y_mm:          float       = 0.0  # latest GPS y in mm (arena frame)
-        self._gps_last_time:     float       = 0.0   # monotonic timestamp of last GPS fix
-        self._gps_timeout_s:     float       = 1.0   # seconds before GPS is treated as stale
-        self._gps_offset_x_mm:   float       = 304.8   # GPS frame → arena frame translation x
-        self._gps_offset_y_mm:   float       = 1524   # GPS frame → arena frame translation y
-        self._tag_body_offset_x_mm: float    = self.TAG_X_OFFSET_MM   # tag position in robot body frame x (mm, forward)
-        self._tag_body_offset_y_mm: float    = self.TAG_Y_OFFSET_MM   # tag position in robot body frame y (mm, left)
-        self._fused_x_mm:        float       = 0.0   # complementary-filter x output (mm)
-        self._fused_y_mm:        float       = 0.0   # complementary-filter y output (mm)
-        self._pos_fusion:        PositionComplementaryFilter = PositionComplementaryFilter(alpha=self.POSITION_ALPHA)
-        self._vel:     tuple = (0.0, 0.0, 0.0)  # vx_mm_s, vy_mm_s, vtheta_rad_s
-        self._buttons: int   = 0
-        self._limits:  int   = 0
-        self._button_edges: int = 0
-        self._limit_edges: int = 0
+        self._tracked_tag_id:      int   = -1
+        self._gps_x_mm:            float = 0.0
+        self._gps_y_mm:            float = 0.0
+        self._gps_last_time:       float = 0.0
+        self._gps_timeout_s:       float = 1.0
+        self._gps_offset_x_mm:     float = 0.0
+        self._gps_offset_y_mm:     float = 0.0
+        self._tag_body_offset_x_mm: float = self.TAG_X_OFFSET_MM
+        self._tag_body_offset_y_mm: float = self.TAG_Y_OFFSET_MM
+        self._gps_paused:          bool  = False
+        self._gps_subscribed:      bool  = False
+
+        # ── Lidar ─────────────────────────────────────────────────────────────
+        self._lidar_mount_x_mm:      float = self.LIDAR_MOUNT_X_MM
+        self._lidar_mount_y_mm:      float = self.LIDAR_MOUNT_Y_MM
+        self._lidar_mount_theta_rad: float = math.radians(self.LIDAR_MOUNT_THETA_DEG)
+        self._lidar_range_min_mm:    float = self.LIDAR_RANGE_MIN_MM
+        self._lidar_range_max_mm:    float = self.LIDAR_RANGE_MAX_MM
+        self._lidar_fov_min_rad:     float = math.radians(self.LIDAR_FOV_MIN_DEG)
+        self._lidar_fov_max_rad:     float = math.radians(self.LIDAR_FOV_MAX_DEG)
+        self._lidar_world_pub        = None   # set by start_lidar_world_publisher
+        self._lidar_world_timer      = None   # ROS timer, fires on spin thread
+        self._obstacle_tracker = ObstacleTracker(
+            cluster_neighbor_mm=self.OBSTACLE_TRACK_CLUSTER_NEIGHBOR_MM,
+            cluster_min_points=self.OBSTACLE_TRACK_CLUSTER_MIN_POINTS,
+            max_disk_radius_mm=self.OBSTACLE_TRACK_MAX_DISK_RADIUS_MM,
+            disk_radius_margin_mm=self.OBSTACLE_TRACK_RADIUS_MARGIN_MM,
+            association_dist_mm=self.OBSTACLE_TRACK_ASSOCIATION_DIST_MM,
+            ttl_s=self.OBSTACLE_TRACK_TTL_S,
+            min_hits_to_confirm=self.OBSTACLE_TRACK_MIN_HITS_TO_CONFIRM,
+            max_tracks=self.OBSTACLE_TRACK_MAX_TRACKS,
+        )
+        self._obstacle_tracks = []
+
+        # ── Fused position ────────────────────────────────────────────────────
+        self._fused_x_mm:    float = 0.0
+        self._fused_y_mm:    float = 0.0
+        self._fused_pose_available: bool = False
+        self._pos_fusion:    PositionComplementaryFilter = PositionComplementaryFilter(alpha=self.POSITION_ALPHA)
+        self._vel:     tuple = (0.0, 0.0, 0.0)   # vx_mm_s, vy_mm_s, vtheta_rad_s
+
+        # ── IO ────────────────────────────────────────────────────────────────
+        self._buttons: int  = 0
+        self._limits:  int  = 0
+        self._button_edges: int  = 0
+        self._limit_edges:  int  = 0
         self._have_io_input: bool = False
+
+        # ── Obstacles / vision ────────────────────────────────────────────────
         self._obstacles_mm: np.ndarray = np.float64([])
-        self._odom_traj: list[tuple[float, float]] = []
+        self._obstacle_provider: Callable[[], list[tuple[float, float]]] | None = None
+        self._obstacle_avoidance_planner = None   # legacy
+        self._virtual_target_mm: tuple[float, float] | None = None
+        self._vision_detections: list[dict[str, object]] = []
+        self._vision_image_size: tuple[int, int] = (0, 0)
+        self._vision_last_time: float = 0.0
+
+        # ── Trajectory ────────────────────────────────────────────────────────
+        self._odom_traj:  list[tuple[float, float]] = []
         self._fused_traj: list[tuple[float, float]] = []
 
         # ── Events ────────────────────────────────────────────────────────────
-        self._pose_event: threading.Event = threading.Event()
+        self._pose_event:       threading.Event = threading.Event()
         self._odom_reset_event: threading.Event = threading.Event()
         self._button_events: dict[int, threading.Event] = {}
         self._limit_events:  dict[int, threading.Event] = {}
 
         # ── Navigation ────────────────────────────────────────────────────────
+        self._nav_lock:   threading.Lock   = threading.Lock()
         self._nav_thread: threading.Thread = None
         self._nav_cancel: threading.Event  = threading.Event()
         self._nav_done:   threading.Event  = threading.Event()
@@ -278,35 +344,35 @@ class Robot:
         self._led_pub      = node.create_publisher(IOSetLed,       '/io_set_led',       10)
         self._neo_pub      = node.create_publisher(IOSetNeopixel,  '/io_set_neopixel',  10)
         self._odom_param_req_pub = node.create_publisher(SysOdomParamReq, '/sys_odom_param_req', 10)
-        self._odom_param_pub = node.create_publisher(SysOdomParamSet, '/sys_odom_param_set', 10)
+        self._odom_param_pub     = node.create_publisher(SysOdomParamSet, '/sys_odom_param_set', 10)
         self._odom_pub     = node.create_publisher(SysOdomReset,   '/sys_odom_reset',   10)
-        # self._fused_kin_pub = node.create_publisher(SensorKinematics, '/fused_kinematics', 10)
+        self._pub_fused_pose = node.create_publisher(FusedPose,    '/fused_pose',       10)
+        self._pub_obstacle_tracks = node.create_publisher(TrackedObstacleArray, '/obstacle_tracks', 10)
+        self._pub_virtual_target = node.create_publisher(VirtualTarget, '/virtual_target', 10)
 
-        # ── Subscriptions ─────────────────────────────────────────────────────
-        node.create_subscription(SystemState,      '/sys_state',         self._on_sys_state,   10)
-        node.create_subscription(SystemPower,      '/sys_power',         self._on_sys_power,   10)
-        node.create_subscription(SystemInfo,       '/sys_info_rsp',      self._on_sys_info,    10)
-        node.create_subscription(SystemConfig,     '/sys_config_rsp',    self._on_sys_config,  10)
-        node.create_subscription(SystemDiag,       '/sys_diag_rsp',      self._on_sys_diag,    10)
-        node.create_subscription(DCPid,            '/dc_pid_rsp',        self._on_dc_pid,      10)
-        node.create_subscription(DCStateAll,       '/dc_state_all',      self._on_dc_state,    10)
-        node.create_subscription(StepConfig,       '/step_config_rsp',   self._on_step_config, 10)
-        node.create_subscription(StepStateAll,     '/step_state_all',    self._on_step_state,  10)
-        node.create_subscription(ServoStateAll,    '/servo_state_all',   self._on_servo_state, 10)
-        node.create_subscription(SensorImu,        '/sensor_imu',        self._on_imu,         10)
-        node.create_subscription(SensorKinematics, '/sensor_kinematics', self._on_kinematics,  10)
-        node.create_subscription(IOInputState,     '/io_input_state',    self._on_io_input,    10)
-        node.create_subscription(IOOutputState,    '/io_output_state',   self._on_io_output,   10)
-        node.create_subscription(SysOdomParamRsp,  '/sys_odom_param_rsp', self._on_odom_param_rsp,    10)
-        node.create_subscription(TagDetectionArray, '/tag_detections',   self._on_tag_detections,    10)
-        node.create_subscription(LaserScan,         '/scan',              self._on_lidar,
-                                 QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
-                                            history=HistoryPolicy.KEEP_LAST, depth=1))
+        # ── Always-on subscriptions ───────────────────────────────────────────
+        node.create_subscription(SystemState,      '/sys_state',          self._on_sys_state,      10)
+        node.create_subscription(SystemPower,      '/sys_power',          self._on_sys_power,      10)
+        node.create_subscription(SystemInfo,       '/sys_info_rsp',       self._on_sys_info,       10)
+        node.create_subscription(SystemConfig,     '/sys_config_rsp',     self._on_sys_config,     10)
+        node.create_subscription(SystemDiag,       '/sys_diag_rsp',       self._on_sys_diag,       10)
+        node.create_subscription(DCPid,            '/dc_pid_rsp',         self._on_dc_pid,         10)
+        node.create_subscription(DCStateAll,       '/dc_state_all',       self._on_dc_state,       10)
+        node.create_subscription(StepConfig,       '/step_config_rsp',    self._on_step_config,    10)
+        node.create_subscription(StepStateAll,     '/step_state_all',     self._on_step_state,     10)
+        node.create_subscription(ServoStateAll,    '/servo_state_all',    self._on_servo_state,    10)
+        node.create_subscription(SensorKinematics, '/sensor_kinematics',  self._on_kinematics,     10)
+        node.create_subscription(IOInputState,     '/io_input_state',     self._on_io_input,       10)
+        node.create_subscription(IOOutputState,    '/io_output_state',    self._on_io_output,      10)
+        node.create_subscription(SysOdomParamRsp,  '/sys_odom_param_rsp', self._on_odom_param_rsp, 10)
+
+        # Sensor subscriptions are opt-in — call enable_lidar(), enable_gps(),
+        # enable_imu(), or enable_vision() to activate them.
 
         # ── Service clients ───────────────────────────────────────────────────
         self._set_state_client = node.create_client(SetFirmwareState, '/set_firmware_state')
 
-        # Sync the local diff-drive / odometry cache with the live firmware snapshot.
+        # Sync local odometry cache with live firmware snapshot.
         self.request_odometry_parameters()
 
     # =========================================================================
@@ -2119,7 +2185,6 @@ class Robot:
             # lidar orientation due to installation is 180 deg rotated from robot forward, so rotate obstacles accordingly
             lidar_offset_mm = 100.0
             obstacles = (np.array([[np.cos(np.pi), -np.sin(np.pi)], [np.sin(np.pi), np.cos(np.pi)]]) @ obstacles_mm.T).T + np.array([[lidar_offset_mm, 0],])
-            obstacles[:,1] *= -1
             # since some robot parts (e.g., the arm) may cause obstacles to be detected, we can filter out those obstacles behind the lidar.
             obstacles = obstacles[obstacles[:,0] > 0,:]
             # transform obstacles from robot frame to world frame.
