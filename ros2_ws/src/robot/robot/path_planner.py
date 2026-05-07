@@ -235,7 +235,8 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
         x, y, theta = pose
         if len(obstacles_r) > 0:
             # lidar orientation due to installation is 180 deg rotated from robot forward, so rotate obstacles accordingly.
-            obstacles_r = (np.array([[np.cos(np.pi), -np.sin(np.pi)], [np.sin(np.pi), np.cos(np.pi)]]) @ obstacles_r.T).T 
+            obstacles_r = (np.array([[np.cos(np.pi), -np.sin(np.pi)], [np.sin(np.pi), np.cos(np.pi)]]) @ obstacles_r.T).T
+            obstacles_r[:,1] *= -1
             
             # since some robot parts (e.g., the arm) may cause obstacles to be detected, we can filter out those obstacles behind the lidar.
             obstacles_r = obstacles_r[np.abs(np.arctan2(obstacles_r[:,1],obstacles_r[:,0])) <= self.view_angle,:] # only consider obstacles in front of the robot within 180 deg FOV, which can help prevent the robot from being too conservative by reacting to obstacles behind it that are not in its path.
@@ -281,23 +282,37 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
                 # Generate new waypoints based on the desired waypoints on the center lane.
                 if change_lane:
                     self.remaining_path = []
+                    
+                    # ALGORITHM UPDATE: Create a smooth diagonal merge
+                    # By making the forward distance slightly larger than the lateral offset, 
+                    # we keep the transition angle under 45°, allowing forward speed to continue.
+                    merge_forward_dist = self.offset * 1.2 
+                    merge_y = y + merge_forward_dist
+                    if closest_pt[0] < self.x_L:
+                        self.current_lane = 'Right'
+                        target_x = x + self.offset
+                    else:
+                        self.current_lane = 'Left'
+                        target_x = x - self.offset
+                    # Inject a midpoint to give Pure Pursuit a diagonal breadcrumb trail to follow
+                    mid_x = x + ((target_x - x) / 2.0)
+                    mid_y = y + (merge_forward_dist / 2.0)
+                    self.remaining_path.append((mid_x, mid_y))
+                    self.remaining_path.append((target_x, merge_y)) 
+                    # Append the rest of the shifted path
                     for i in range(len(self.raw_path)):
                         x_, y_ = self.raw_path[i]
-                        if closest_pt[0] < self.x_L:
-                            self.remaining_path.append((x_+self.offset, y_))
-                            self.current_lane = 'Right'
-                        else:
-                            self.remaining_path.append((x_-self.offset, y_))
-                            self.current_lane = 'Left'
+                        if y_ > merge_y: 
+                            if self.current_lane == 'Right':
+                                self.remaining_path.append((x_ + self.offset, y_))
+                            else:
+                                self.remaining_path.append((x_ - self.offset, y_))
                     print('Change Lane!!! Current lane is:', self.current_lane)
-                    if np.hypot(x-closest_pt[0], y-closest_pt[1]) < (self.safe_dist+self.obstacles_range)/2:
-                        print('Too Closed!!!')
-                        if self.current_lane == 'Right':
-                            self.remaining_path.insert(0, (x+self.offset, y+self.offset/2))
-                            self.raw_path.insert(0, (x+self.offset, y+self.offset))
-                        elif self.current_lane == 'Left':
-                            self.remaining_path.insert(0, (x-self.offset, y+self.offset/2))
-                            self.raw_path.insert(0, (x-self.offset, y+self.offset))
+                    # Reduce lookahead distance to track the diagonal precisely.
+                    self.Ld = self.raw_LD * self.alpha_Ld
+                    # Keep avoidance active for a few cycles.
+                    self.avoidance_counter = self.avoidance_delay
+                    self.avoidance_active = True
 
         if self.avoidance_counter > 0:
             self.avoidance_counter -= 1

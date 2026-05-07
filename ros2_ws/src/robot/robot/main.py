@@ -19,9 +19,9 @@ WHEEL_DIAMETER = 79.2
 WHEEL_BASE = 358.0
 INITIAL_THETA_DEG = 90.0
 
-LEFT_WHEEL_MOTOR = Motor.DC_M2
-LEFT_WHEEL_DIR_INVERTED = False
-RIGHT_WHEEL_MOTOR = Motor.DC_M1
+LEFT_WHEEL_MOTOR = Motor.DC_M1
+LEFT_WHEEL_DIR_INVERTED = True
+RIGHT_WHEEL_MOTOR = Motor.DC_M2
 RIGHT_WHEEL_DIR_INVERTED = False
 
 
@@ -68,38 +68,38 @@ def run(robot: Robot) -> None:
         if state == "INIT":
             start_robot(robot)
             print("[FSM] INIT (odometry reset)")
-            # center lane
+            # Overall Course
             # path_control_points = [ #Define your path control points here (x, y) in mm
             #     (0.0, 0.0), # 1st point
-                (0.0, 3254.8), # 2nd point
-                (609.6, 3254.8), # 3rd point
-                (609.6, 0.0), # 4th point
-                (914.4, 0.0), # 5th point
-                (914.4, 3254.8), # 6th point                    
+            #     (0.0, 3354.8), # 2nd point
+            #     (609.6, 3354.8), # 3rd point
+            #     (609.6, 305.0), # 4th point
+            #     (1524.4, 305.0), # 5th point
+            #     (1524.4, 3254.8), # 6th point                  
             # ]
-            # left lane
+            # Left Lane
             path_control_points = [
                 (300.0,   0.0),
                 (300.0, 2500.0),
                 (1300.0, 2500.0),
             ]
 
-            path = densify_polyline(path_control_points, spacing=400.0)
+            path = densify_polyline(path_control_points, spacing=20.0) # original spacing = 400.0
 
             robot._nav_follow_pp_path(
-                lookahead_distance=100.0,
-                max_linear_speed=140.0,
-                max_angular_speed=1.5,
+                lookahead_distance=100.0, # mm
+                max_linear_speed=140.0, # mm/s
+                max_angular_speed=0.5, # rad/s
                 goal_tolerance=20.0,
-                obstacles_range=450.0,
-                view_angle=math.radians(70.0),
-                safe_dist=250.0,
-                avoidance_delay=150,
-                alpha_Ld=0.7,
-                offset=270.0,
-                lane_width=500.0,
+                obstacles_range=400.0,
+                view_angle=math.radians(45.0),
+                safe_dist=250.0, # mm
+                avoidance_delay=60, # number of loops to pause the original PP
+                alpha_Ld=0.4, # changes the lookahead distance scaling when obstacle is found
+                offset=250.0, # mm
+                lane_width=609.6,
                 obstacle_avoidance=True,
-                x_L=300.0,
+                x_L=305.0, # mm, 300.0
             )
             robot.planner.set_path(path)
             print("Path is ready, Entering IDLE state.")

@@ -175,7 +175,7 @@ class Robot:
     DEFAULT_RIGHT_WHEEL_MOTOR: int = int(Motor.DC_M2)
     DEFAULT_LEFT_WHEEL_DIR_INVERTED: bool = False
     DEFAULT_RIGHT_WHEEL_DIR_INVERTED: bool = True
-    POSITION_ALPHA = 0.10  # complementary filter GPS weight for position fusion
+    POSITION_ALPHA = 0.20  # complementary filter GPS weight for position fusion, default 0.10
     ORIENTATION_ALPHA = 0.0  # complementary filter IMU weight for orientation fusion (IMU is not working well, so default to pure odometry for now)
     TAG_X_OFFSET_MM = 0.0  # ArUco tag position in robot body frame x (mm, forward)
     TAG_Y_OFFSET_MM = 0.0  # ArUco tag position in robot body frame y (mm, left)
@@ -2119,6 +2119,7 @@ class Robot:
             # lidar orientation due to installation is 180 deg rotated from robot forward, so rotate obstacles accordingly
             lidar_offset_mm = 100.0
             obstacles = (np.array([[np.cos(np.pi), -np.sin(np.pi)], [np.sin(np.pi), np.cos(np.pi)]]) @ obstacles_mm.T).T + np.array([[lidar_offset_mm, 0],])
+            obstacles[:,1] *= -1
             # since some robot parts (e.g., the arm) may cause obstacles to be detected, we can filter out those obstacles behind the lidar.
             obstacles = obstacles[obstacles[:,0] > 0,:]
             # transform obstacles from robot frame to world frame.
