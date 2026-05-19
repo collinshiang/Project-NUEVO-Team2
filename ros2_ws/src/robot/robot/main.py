@@ -13,7 +13,7 @@ import numpy as np
 # Robot build configuration
 # ---------------------------------------------------------------------------
 
-TAG_ID = 12 # set aruco tag ID 11 
+TAG_ID = 14 # set aruco tag ID 11 
 POSITION_UNIT = Unit.MM
 WHEEL_DIAMETER = 79.2
 WHEEL_BASE = 358.0
@@ -56,62 +56,53 @@ def start_robot(robot: Robot) -> None:
 
 
 def run(robot: Robot) -> None:
+    # 1. The delay to fix the firmware overwrite race condition
+    time.sleep(0.5) 
     configure_robot(robot)
 
     state = "INIT"
-    drive_handle = None
     period = 1.0 / float(DEFAULT_FSM_HZ)
     print(f"FSM period: {period:.3f} seconds")
     next_tick = time.monotonic()
+    
+    # Declare planner and path at this scope so they persist
+    planner = None
+    remaining_path = []
 
     while True:
         if state == "INIT":
             start_robot(robot)
             print("[FSM] INIT (odometry reset)")
-            # Overall Course
-            # path_control_points = [ #Define your path control points here (x, y) in mm
-            #     (0.0, 0.0), # 1st point
-            #     (0.0, 3354.8), # 2nd point
-            #     (609.6, 3354.8), # 3rd point
-            #     (609.6, 305.0), # 4th point
-            #     (1524.4, 305.0), # 5th point
-            #     (1524.4, 3254.8), # 6th point                  
-            # ]
-            # Left Lane
-            path_control_points = [
-                (300.0,   0.0),
-                (300.0, 2500.0),
-                (1300.0, 2500.0),
+            
+            # Center lane waypoints
+            path_control_points = [ 
+                (0.0, 0.0),           # 1st/starting point
+                (-50.0, 3431.0),        # 2nd point
+                (533.4, 3431.0),      # 3rd point 
+                (450.4, 624.8),       # 4th point
+                (1524, 624.8),        # 5th point
+                (1524, 2630),         # 6th point                        
             ]
 
-            path = densify_polyline(path_control_points, spacing=20.0) # original spacing = 400.0
+            # Densify the path
+            remaining_path = densify_polyline(path_control_points, spacing=20.0)
 
-            robot._nav_follow_pp_path(
-                lookahead_distance=100.0, # mm
-                max_linear_speed=140.0, # mm/s
-                max_angular_speed=0.5, # rad/s
+            # 2. Initialize the STANDARD Pure Pursuit planner (No Avoidance!)
+            LOOKAHEAD_DIST = 100.0
+            planner = PurePursuitPlanner(
+                lookahead_dist=LOOKAHEAD_DIST,
+                max_angular=1.5, 
                 goal_tolerance=20.0,
-                obstacles_range=400.0,
-                view_angle=math.radians(45.0),
-                safe_dist=250.0, # mm
-                avoidance_delay=60, # number of loops to pause the original PP
-                alpha_Ld=0.4, # changes the lookahead distance scaling when obstacle is found
-                offset=250.0, # mm
-                lane_width=609.6,
-                obstacle_avoidance=True,
-                x_L=305.0, # mm, 300.0
             )
-            robot.planner.set_path(path)
-            print("Path is ready, Entering IDLE state.")
+            
+            print("Standard Pure Pursuit initialized. Lidar is completely ignored.")
             print("[FSM] IDLE - Press BTN_1 to enter MOVING state.")
             state = "IDLE"
 
         elif state == "IDLE":
             show_idle_leds(robot)
-            robot._draw_lidar_obstacles()
             if robot.get_button(Button.BTN_1):
                 print("Start Moving!")
-                print("[FSM] MOVING")
                 state = "MOVING"
             if robot.get_button(Button.BTN_2):
                 print("BTN_2 pressed. Stopping robot and saving trajectory.")
@@ -119,10 +110,39 @@ def run(robot: Robot) -> None:
 
         elif state == "MOVING":
             show_moving_leds(robot)
-            # if next_tick % 0.5 < period: # print every half second
-            #     robot._draw_lidar_obstacles()
-            #     print("Obstacle figure updated.")
-            state = robot._nav_follow_pp_path_loop()
+            
+            # Step A: Get current pose
+            current_x, current_y, current_theta_deg = robot.get_pose()
+            current_theta_rad = math.radians(current_theta_deg)
+
+            # Step B: Advance the path
+            remaining_path = robot._advance_remaining_path(
+                remaining_path, 
+                current_x, 
+                current_y, 
+                advance_radius_mm=LOOKAHEAD_DIST
+            )
+
+            # Step C: Compute pure pursuit velocity (NO OBSTACLES)
+            linear_cmd, angular_cmd_rad_s = planner.compute_velocity(
+                pose=(current_x, current_y, current_theta_rad),
+                waypoints=remaining_path,
+                max_linear=160.0,
+            )
+
+            # Step D: Send the commands
+            # print(f"COMMANDING: Lin={linear_cmd:.1f} mm/s, Ang={math.degrees(angular_cmd_rad_s):.1f} deg/s")
+            robot.set_velocity(linear_cmd, math.degrees(angular_cmd_rad_s))
+
+            # Step E: Check if finished
+            current_pursuit_x, current_pursuit_y = planner._lookahead_point(
+                current_x, current_y, waypoints=remaining_path
+            )
+            
+            if planner.CurrentTargetReached(current_pursuit_x, current_pursuit_y, current_x, current_y):
+                print("MOVING: Target reached! Stopping.")
+                robot.stop()
+                state = "IDLE"
 
         # FSM refresh rate control
         next_tick += period

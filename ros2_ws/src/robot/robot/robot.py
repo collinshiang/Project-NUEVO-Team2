@@ -167,7 +167,7 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
     DEFAULT_RIGHT_WHEEL_MOTOR: int = int(HW_RIGHT_WHEEL_MOTOR)
     DEFAULT_LEFT_WHEEL_DIR_INVERTED:  bool = HW_LEFT_WHEEL_DIR_INVERTED
     DEFAULT_RIGHT_WHEEL_DIR_INVERTED: bool = HW_RIGHT_WHEEL_DIR_INVERTED
-    POSITION_ALPHA    = 0.10   # complementary filter GPS weight for position fusion
+    POSITION_ALPHA    = 0.20   # complementary filter GPS weight for position fusion
     ORIENTATION_ALPHA = 0.0    # complementary filter IMU weight for orientation fusion
     TAG_X_OFFSET_MM   = TAG_BODY_OFFSET_X_MM   # ArUco tag x in robot body frame (mm, +x = forward)
     TAG_Y_OFFSET_MM   = TAG_BODY_OFFSET_Y_MM   # ArUco tag y in robot body frame (mm, +y = left)
@@ -2066,12 +2066,12 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
             pose = self._pose
             vel = self._vel
 
-        v, w = self.planner.compute_velocity(path, pose, vel, obstacles, period)
+        v, w = self._planner.compute_velocity(path, pose, vel, obstacles, period)
         # print(f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s")
         self.set_velocity(v, math.degrees(w))
         # print(f"Current Pose: ({pose[0]:.1f}, {pose[1]:.1f}, {math.degrees(pose[2]):.1f} deg)")
 
-        if self.planner.TargetReached(path, pose[0], pose[1]):
+        if self._planner.TargetReached(path, pose[0], pose[1]):
             print("MOVING: Target reached! Stopping.")
             self.stop()
             return "IDLE"
@@ -2096,7 +2096,7 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
     ) -> None:
 
         from robot.path_planner import PurePursuitPlannerWithAvoidance
-        self.planner = PurePursuitPlannerWithAvoidance(
+        self._planner = PurePursuitPlannerWithAvoidance(
             lookahead_distance=lookahead_distance,
             max_linear_speed=max_linear_speed,
             max_angular_speed=max_angular_speed,
@@ -2131,7 +2131,7 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
     ) -> None:
 
         from robot.path_planner import PurePursuitPlannerWithAvoidance2
-        self.planner = PurePursuitPlannerWithAvoidance2(
+        self._planner = PurePursuitPlannerWithAvoidance2(
             lookahead_distance=lookahead_distance,
             max_linear_speed=max_linear_speed,
             max_angular_speed=max_angular_speed,
@@ -2160,20 +2160,21 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         # obstacles = (obstacles-np.float64([[pose[0], pose[1]]]))
         # obstacles = (np.array([[np.cos(pose[2]), -np.sin(pose[2])], [np.sin(pose[2]), np.cos(pose[2])]]).T @ obstacles.T).T # obstacles in robot frame
 
-        v, w = self.planner.compute_velocity(pose, obstacles)
+        v, w = self._planner.compute_velocity(pose, obstacles)
         # print(f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s")
         self.set_velocity(v, math.degrees(w))
         # print(f"Current Pose: ({pose[0]:.1f}, {pose[1]:.1f}, {math.degrees(pose[2]):.1f} deg)")
 
-        if self.planner.TargetReached(self.planner.remaining_path, pose[0], pose[1]):
+        if self._planner.TargetReached(self._planner.remaining_path, pose[0], pose[1]):
             print("MOVING: Target reached! Stopping.")
-            print(self.planner.remaining_path, pose[0], pose[1])
+            print(self._planner.remaining_path, pose[0], pose[1])
             self.stop()
             return "IDLE"
 
         return "MOVING"
 
     def _draw_lidar_obstacles(self):
+        import matplotlib.pyplot as plt
         with self._lock:
              obstacles_mm = self._obstacles_mm.copy()
              pose = self._pose
