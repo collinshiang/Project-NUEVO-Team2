@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import csv
 import math
 import time
 import threading
@@ -172,7 +171,6 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
     ORIENTATION_ALPHA = 0.0    # complementary filter IMU weight for orientation fusion
     TAG_X_OFFSET_MM   = TAG_BODY_OFFSET_X_MM   # ArUco tag x in robot body frame (mm, +x = forward)
     TAG_Y_OFFSET_MM   = TAG_BODY_OFFSET_Y_MM   # ArUco tag y in robot body frame (mm, +y = left)
-    ODOM_LOG_PATH     = "odometry_log.csv"     # CSV log of (time, x, y) for every odometry point
 
     LIDAR_MOUNT_X_MM:      float = LIDAR_MOUNT_X_MM      # lidar x in robot body frame (mm, +x = forward)
     LIDAR_MOUNT_Y_MM:      float = LIDAR_MOUNT_Y_MM      # lidar y in robot body frame (mm, +y = left)
@@ -314,12 +312,6 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         # ── Trajectory ────────────────────────────────────────────────────────
         self._odom_traj:  list[tuple[float, float]] = []
         self._fused_traj: list[tuple[float, float]] = []
-
-        # ── Odometry point log (time, x, y for every odometry update) ────────
-        self._odom_log_start_time = _time.monotonic()
-        self._odom_log_file = open(self.ODOM_LOG_PATH, "w", newline="")
-        self._odom_log_writer = csv.writer(self._odom_log_file)
-        self._odom_log_writer.writerow(["time_s", "x_mm", "y_mm"])
 
         # ── Events ────────────────────────────────────────────────────────────
         self._pose_event:       threading.Event = threading.Event()
@@ -514,12 +506,6 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
 
         self._odom_traj.append(_raw_odom)
         self._fused_traj.append(_raw_fused)
-
-        _odom_log_time_s = _time.monotonic() - self._odom_log_start_time
-        print(f"[odom] t={_odom_log_time_s:8.3f}s  x={_raw_odom[0]:7.1f} mm  y={_raw_odom[1]:7.1f} mm")
-        self._odom_log_writer.writerow([f"{_odom_log_time_s:.3f}", f"{_raw_odom[0]:.1f}", f"{_raw_odom[1]:.1f}"])
-        self._odom_log_file.flush()
-
         self._node.get_logger().info(
             f"odom=({_raw_odom[0]:.1f}, {_raw_odom[1]:.1f}) mm, θ ={float(math.degrees(msg.theta)):5.1f}°",
             # f"fused=({_raw_fused[0]:.1f}, {_raw_fused[1]:.1f}) mm",
@@ -920,7 +906,6 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         if self.get_state() == FirmwareState.RUNNING:
             self.set_state(FirmwareState.IDLE, timeout=1.0)
         self.save_trajectory_image()
-        self._odom_log_file.close()
 
     def set_left_wheel(self, motor_id: int) -> None:
         """Alias for set_odom_left_motor()."""
