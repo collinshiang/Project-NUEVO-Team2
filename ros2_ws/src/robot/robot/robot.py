@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import csv
 import math
 import time
 import threading
@@ -167,10 +168,11 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
     DEFAULT_RIGHT_WHEEL_MOTOR: int = int(HW_RIGHT_WHEEL_MOTOR)
     DEFAULT_LEFT_WHEEL_DIR_INVERTED:  bool = HW_LEFT_WHEEL_DIR_INVERTED
     DEFAULT_RIGHT_WHEEL_DIR_INVERTED: bool = HW_RIGHT_WHEEL_DIR_INVERTED
-    POSITION_ALPHA    = 0.20   # complementary filter GPS weight for position fusion
+    POSITION_ALPHA    = 0.05   # complementary filter GPS weight for position fusion
     ORIENTATION_ALPHA = 0.0    # complementary filter IMU weight for orientation fusion
     TAG_X_OFFSET_MM   = TAG_BODY_OFFSET_X_MM   # ArUco tag x in robot body frame (mm, +x = forward)
     TAG_Y_OFFSET_MM   = TAG_BODY_OFFSET_Y_MM   # ArUco tag y in robot body frame (mm, +y = left)
+    ODOM_LOG_PATH     = "odometry_log.csv"     # CSV log of (time, x, y) for every odometry point
 
     LIDAR_MOUNT_X_MM:      float = LIDAR_MOUNT_X_MM      # lidar x in robot body frame (mm, +x = forward)
     LIDAR_MOUNT_Y_MM:      float = LIDAR_MOUNT_Y_MM      # lidar y in robot body frame (mm, +y = left)
@@ -312,6 +314,12 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         # ── Trajectory ────────────────────────────────────────────────────────
         self._odom_traj:  list[tuple[float, float]] = []
         self._fused_traj: list[tuple[float, float]] = []
+
+        # ── Odometry point log (time, x, y for every odometry update) ────────
+        self._odom_log_start_time = _time.monotonic()
+        self._odom_log_file = open(self.ODOM_LOG_PATH, "w", newline="")
+        self._odom_log_writer = csv.writer(self._odom_log_file)
+        self._odom_log_writer.writerow(["time_s", "x_mm", "y_mm"])
 
         # ── Events ────────────────────────────────────────────────────────────
         self._pose_event:       threading.Event = threading.Event()
@@ -506,9 +514,15 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
 
         self._odom_traj.append(_raw_odom)
         self._fused_traj.append(_raw_fused)
+
+        _odom_log_time_s = _time.monotonic() - self._odom_log_start_time
+        print(f"[odom] t={_odom_log_time_s:8.3f}s  x={_raw_odom[0]:7.1f} mm  y={_raw_odom[1]:7.1f} mm")
+        self._odom_log_writer.writerow([f"{_odom_log_time_s:.3f}", f"{_raw_odom[0]:.1f}", f"{_raw_odom[1]:.1f}"])
+        self._odom_log_file.flush()
+
         self._node.get_logger().info(
-            f"odom=({_raw_odom[0]:.1f}, {_raw_odom[1]:.1f}) mm  "
-            f"fused=({_raw_fused[0]:.1f}, {_raw_fused[1]:.1f}) mm",
+            f"odom=({_raw_odom[0]:.1f}, {_raw_odom[1]:.1f}) mm, θ ={float(math.degrees(msg.theta)):5.1f}°",
+            # f"fused=({_raw_fused[0]:.1f}, {_raw_fused[1]:.1f}) mm",
             throttle_duration_sec=0.5,
         )
         self._pose_event.set()
@@ -906,6 +920,7 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         if self.get_state() == FirmwareState.RUNNING:
             self.set_state(FirmwareState.IDLE, timeout=1.0)
         self.save_trajectory_image()
+        self._odom_log_file.close()
 
     def set_left_wheel(self, motor_id: int) -> None:
         """Alias for set_odom_left_motor()."""
@@ -1981,6 +1996,42 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
             remaining_path.pop(0)
         return remaining_path
 
+    # @staticmethod
+    # def _advance_remaining_path(
+    #     remaining_path: list[tuple[float, float]],
+    #     x_mm: float,
+    #     y_mm: float,
+    #     advance_radius_mm: float,
+    # ) -> list[tuple[float, float]]:
+    #     if not remaining_path:
+    #         return remaining_path
+            
+    #     # 1. Find the closest waypoint in the near future
+    #     min_dist = float('inf')
+    #     closest_idx = 0
+        
+    #     # Look ahead up to 40 waypoints (2000mm at 20mm spacing) 
+    #     # to prevent jumping to adjacent parallel lanes
+    #     search_window = min(len(remaining_path), 40) 
+    #     for i in range(search_window):
+    #         dist = _dist2d(x_mm, y_mm, remaining_path[i][0], remaining_path[i][1])
+    #         if dist < min_dist:
+    #             min_dist = dist
+    #             closest_idx = i
+                
+    #     # 2. Fast-forward the path to the closest waypoint (drops everything behind the rover)
+    #     for _ in range(closest_idx):
+    #         remaining_path.pop(0)
+
+    #     # 3. Apply the normal radius pop (if we are physically over the target)
+    #     while len(remaining_path) > 1:
+    #         next_x_mm, next_y_mm = remaining_path[0]
+    #         if _dist2d(x_mm, y_mm, next_x_mm, next_y_mm) > advance_radius_mm:
+    #             break
+    #         remaining_path.pop(0)
+            
+    #     return remaining_path
+
     def _turn_to_heading(
         self,
         target_rad: float,
@@ -2012,17 +2063,19 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
 
 
     # =========================================================================
-    # Obstacle avoidance — DWA path following  (restored from commit 8894254)
+    # Obstacle avoidance — DWA path following
     # =========================================================================
 
-    def _nav_follow_dwa_path(
+    def _init_dwa_planner(
         self,
         max_vel_mm: float,
         max_acc_mm: float,
         max_angular_rad: float,
         max_angular_acc_rad: float,
         lookahead_mm: float,
-        advance_radius_mm: float,
+        robot_front_mm: float,       # <-- New parameter
+        robot_rear_mm: float,        # <-- New parameter
+        robot_half_width_mm: float,  # <-- New parameter
         tolerance_mm: float,
         gains_of_costs: list,
         period: float,
@@ -2031,15 +2084,13 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         obstacles_range_mm: float,
         ttc_weight: float,
     ) -> None:
-        # NOTE (design gap): this method only constructs self.planner and returns
-        # immediately — it does NOT start any navigation loop.  The caller is
-        # expected to drive navigation manually by calling _nav_follow_path_loop()
-        # on every FSM tick (as done in examples/obstacle_avoidance.py).  This is
-        # a non-obvious split: unlike _nav_follow_pure_pursuit_path() which blocks
-        # until the goal is reached, _nav_follow_dwa_path() is a setup-only call.
-        # Consider renaming it _init_dwa_planner() to make the intent explicit.
+        """
+        Initializes the Dynamic Window Approach (DWA) planner with a rectangular footprint.
+        Call this once before starting the navigation loop.
+        """
         from robot.path_planner import DWAPlanner
-        self.planner = DWAPlanner(
+        
+        self._planner = DWAPlanner(
             lookahead_dist=lookahead_mm,
             max_linear_speed=max_vel_mm,
             max_angular_speed=max_angular_rad,
@@ -2050,33 +2101,89 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
             dt=period,
             predict_time=predict_time,
             predict_velocity_samples_resolution=predict_velocity_samples_resolution,
-            robot_radius=advance_radius_mm,
+            robot_front_mm=robot_front_mm,             # <-- Passed to planner
+            robot_rear_mm=robot_rear_mm,               # <-- Passed to planner
+            robot_half_width_mm=robot_half_width_mm,   # <-- Passed to planner
             obstacles_range=obstacles_range_mm,
             ttc_weight=ttc_weight,
         )
 
-    def _nav_follow_path_loop(self, path, period: float):
+    def _nav_follow_path_loop(self, path: list[tuple[float, float]], period: float) -> str:
+        """
+        Executes a single step of the DWA navigation loop, dynamically popping 
+        passed waypoints to prevent backtracking.
+        """
         with self._lock:
             obstacles = self._obstacles_mm.copy()
-            # _get_pose_mm() returns (_fused_x_mm, _fused_y_mm, _fused_theta), which
-            # already incorporates GPS/odometry fusion. self._pose is raw odometry and
-            # diverges from the fused position once a GPS anchor is applied, so
-            # DWAPlanner path following should use _get_pose_mm() to avoid navigating
-            # from the wrong starting point.
             pose = self._pose
             vel = self._vel
 
-        v, w = self._planner.compute_velocity(path, pose, vel, obstacles, period)
-        # print(f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s")
-        self.set_velocity(v, math.degrees(w))
-        # print(f"Current Pose: ({pose[0]:.1f}, {pose[1]:.1f}, {math.degrees(pose[2]):.1f} deg)")
+        # 1. Pop old waypoints from the path just like Pure Pursuit does!
+        # advance_radius = getattr(self._planner, 'lookahead_dist', 125.0)    # Using the planner's lookahead_dist or defined value as the pop radius.
+        advance_radius = 125.0
+        self._advance_remaining_path(path, pose[0], pose[1], advance_radius)
 
+        # 2. Check if the final waypoint has been reached
         if self._planner.TargetReached(path, pose[0], pose[1]):
-            print("MOVING: Target reached! Stopping.")
+            self._node.get_logger().info("MOVING: Target reached! Stopping.")
             self.stop()
             return "IDLE"
 
+        # 3. Compute optimal velocity commands for this tick
+        v, w = self._planner.compute_velocity(path, pose, vel, obstacles, period)
+
+        # --- COLLISION CATCHER ---
+        if v is None and w is None:
+            self.stop()
+            return "COLLISION"
+        # ------------------------------
+        
+        # --- Debug Logging ---
+        self._node.get_logger().info(
+            f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s"
+        )
+        self._node.get_logger().info(
+            f"LiDAR points detected: {len(obstacles)}"
+        )
+        # ---------------------
+        
+        # 4. Send commands to the motors
+        self.set_velocity(v, math.degrees(w))
+
         return "MOVING"
+
+    # For collision handling: not using anymore
+    # def get_closest_lidar_point(self) -> tuple[float | None, float | None]:
+    #     """
+    #     Returns the (distance_mm, angle_deg) of the absolute closest obstacle 
+    #     currently visible in the filtered LiDAR scan.
+    #     """
+    #     with self._nav_lock:
+    #         # Safely grab the correct TA array
+    #         obstacles = getattr(self, '_obstacles_mm', None)
+            
+    #         if obstacles is None or len(obstacles) == 0:
+    #             return None, None
+            
+    #         min_dist = float('inf')
+    #         best_angle = 0.0
+
+    #         # _obstacles_mm contains [x, y] coordinates
+    #         for pt in obstacles:
+    #             x, y = pt[0], pt[1]
+    #             # Cartesian to Polar conversion
+    #             dist = math.hypot(x, y)               
+    #             if dist < min_dist:
+    #                 min_dist = dist
+    #                 # atan2(y, x) gives the angle in radians, convert to degrees
+    #                 best_angle = math.degrees(math.atan2(y, x))
+            
+    #         if min_dist == float('inf'):
+    #             return None, None
+                
+    #         return min_dist, best_angle
+    
+    # =======================================================================================
 
     def _nav_follow_pp_path(
         self,
@@ -2161,7 +2268,7 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         # obstacles = (np.array([[np.cos(pose[2]), -np.sin(pose[2])], [np.sin(pose[2]), np.cos(pose[2])]]).T @ obstacles.T).T # obstacles in robot frame
 
         v, w = self._planner.compute_velocity(pose, obstacles)
-        # print(f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s")
+        print(f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s")
         self.set_velocity(v, math.degrees(w))
         # print(f"Current Pose: ({pose[0]:.1f}, {pose[1]:.1f}, {math.degrees(pose[2]):.1f} deg)")
 
