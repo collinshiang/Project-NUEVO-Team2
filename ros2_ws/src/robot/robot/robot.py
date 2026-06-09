@@ -1965,57 +1965,34 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         y_mm: float,
         advance_radius_mm: float,
     ) -> list[tuple[float, float]]:
-        """
-        Advance path progress in route order.
+        if not remaining_path:
+            return remaining_path
+            
+        # 1. Find the closest waypoint in the near future
+        min_dist = float('inf')
+        closest_idx = 0
+        
+        # Look ahead up to 40 waypoints (2000mm at 20mm spacing) 
+        # to prevent jumping to adjacent parallel lanes
+        search_window = min(len(remaining_path), 40) 
+        for i in range(search_window):
+            dist = _dist2d(x_mm, y_mm, remaining_path[i][0], remaining_path[i][1])
+            if dist < min_dist:
+                min_dist = dist
+                closest_idx = i
+                
+        # 2. Fast-forward the path to the closest waypoint (drops everything behind the rover)
+        for _ in range(closest_idx):
+            remaining_path.pop(0)
 
-        Intermediate waypoints are dropped once the robot gets within the
-        advance radius of the current front waypoint. The final waypoint is
-        never dropped here; completion is handled separately so looped or
-        overlapping paths do not finish early just because the robot passes
-        near the final goal before traversing the whole route.
-        """
+        # 3. Apply the normal radius pop (if we are physically over the target)
         while len(remaining_path) > 1:
             next_x_mm, next_y_mm = remaining_path[0]
             if _dist2d(x_mm, y_mm, next_x_mm, next_y_mm) > advance_radius_mm:
                 break
             remaining_path.pop(0)
+            
         return remaining_path
-
-    # @staticmethod
-    # def _advance_remaining_path(
-    #     remaining_path: list[tuple[float, float]],
-    #     x_mm: float,
-    #     y_mm: float,
-    #     advance_radius_mm: float,
-    # ) -> list[tuple[float, float]]:
-    #     if not remaining_path:
-    #         return remaining_path
-            
-    #     # 1. Find the closest waypoint in the near future
-    #     min_dist = float('inf')
-    #     closest_idx = 0
-        
-    #     # Look ahead up to 40 waypoints (2000mm at 20mm spacing) 
-    #     # to prevent jumping to adjacent parallel lanes
-    #     search_window = min(len(remaining_path), 40) 
-    #     for i in range(search_window):
-    #         dist = _dist2d(x_mm, y_mm, remaining_path[i][0], remaining_path[i][1])
-    #         if dist < min_dist:
-    #             min_dist = dist
-    #             closest_idx = i
-                
-    #     # 2. Fast-forward the path to the closest waypoint (drops everything behind the rover)
-    #     for _ in range(closest_idx):
-    #         remaining_path.pop(0)
-
-    #     # 3. Apply the normal radius pop (if we are physically over the target)
-    #     while len(remaining_path) > 1:
-    #         next_x_mm, next_y_mm = remaining_path[0]
-    #         if _dist2d(x_mm, y_mm, next_x_mm, next_y_mm) > advance_radius_mm:
-    #             break
-    #         remaining_path.pop(0)
-            
-    #     return remaining_path
 
     def _turn_to_heading(
         self,
@@ -2146,13 +2123,10 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
     #     with self._nav_lock:
     #         # Safely grab the correct TA array
     #         obstacles = getattr(self, '_obstacles_mm', None)
-            
     #         if obstacles is None or len(obstacles) == 0:
     #             return None, None
-            
     #         min_dist = float('inf')
     #         best_angle = 0.0
-
     #         # _obstacles_mm contains [x, y] coordinates
     #         for pt in obstacles:
     #             x, y = pt[0], pt[1]
@@ -2161,11 +2135,9 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
     #             if dist < min_dist:
     #                 min_dist = dist
     #                 # atan2(y, x) gives the angle in radians, convert to degrees
-    #                 best_angle = math.degrees(math.atan2(y, x))
-            
+    #                 best_angle = math.degrees(math.atan2(y, x))         
     #         if min_dist == float('inf'):
-    #             return None, None
-                
+    #             return None, None              
     #         return min_dist, best_angle
     
     # =======================================================================================
