@@ -24,7 +24,7 @@ class Motor(IntEnum):
 # self-filtering, and GPS tag mounting geometry.
 POSITION_UNIT = Unit.MM
 WHEEL_DIAMETER = 84.0
-WHEEL_BASE = 380.0      # VERY IMPORTANT FOR PP ODOMETRY - expanded a little wider than actual.
+WHEEL_BASE = 385.0      # VERY IMPORTANT FOR PP ODOMETRY - expanded a little wider than actual.
 INITIAL_THETA_DEG = 90.0
 
 LEFT_WHEEL_MOTOR = Motor.DC_M1

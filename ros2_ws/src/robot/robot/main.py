@@ -56,9 +56,9 @@ MIN_STOP_SIGN_CONFIDENCE = 0.50
 TAG_ID = 13                 
 GPS_POSITION_ALPHA = 0.01   
 
-PP_VELOCITY_MM_S = 220.0  # Higher speed for open track
-PP_ANGULAR_VEL = 1.5
-PP_LOOKAHEAD_MM = 100.0                                     
+PP_VELOCITY_MM_S = 225.0  # Higher speed for open track
+PP_ANGULAR_VEL = 1.0      # lower for more precise turns
+PP_LOOKAHEAD_MM = 60.0    # 60                                 
 PP_TOLERANCE_MM = 20.0
 
 # ---------------------------------------------------------------------------
@@ -76,8 +76,8 @@ DWA_VELOCITY_SAMPLES = [7, 15]  # [linear_samples, angular_samples] - num. of ca
 
 # Cost Weights: [heading_gain, clearance_gain, velocity_gain]
 DWA_COST_GAINS = [1.0, 1.5, 2.0]
-DWA_LOOKAHEAD_MM = 300.0        # Unique lookahead for DWA
-DWA_TOLERANCE_MM = 600.0        # Goal point tolerance 
+DWA_LOOKAHEAD_MM = 300.0        # Unique lookahead for DWA (won't matter too much)
+DWA_TOLERANCE_MM = 50.0        # Goal point tolerance 
 
 # Distance at which an obstacle starts generating a cost. 
 DWA_OBSTACLES_RANGE_MM = 600.0  
@@ -90,19 +90,19 @@ LASTLANE_DWA_MAX_ACC_MM_S2 = 500.0
 LASTLANE_DWA_MAX_ANGULAR_RAD_S = 1.5
 LASTLANE_DWA_MAX_ANGULAR_ACC_RAD_S2 = 5.0
 LASTLANE_DWA_PREDICT_TIME_S = 1.5        
-LASTLANE_DWA_VELOCITY_SAMPLES = [5, 7] 
-LASTLANE_DWA_COST_GAINS = [2.5, 1.0, 2.5]
-LASTLANE_DWA_LOOKAHEAD_MM = 300.0        
-LASTLANE_DWA_TOLERANCE_MM = 150.0        
-LASTLANE_DWA_OBSTACLES_RANGE_MM = 160.0
+LASTLANE_DWA_VELOCITY_SAMPLES = [5, 9] 
+LASTLANE_DWA_COST_GAINS = [2.0, 1.0, 2.0]
+LASTLANE_DWA_LOOKAHEAD_MM = 80.0        
+LASTLANE_DWA_TOLERANCE_MM = 50.0        
+LASTLANE_DWA_OBSTACLES_RANGE_MM = 140.0
 
 # ---------------------------------------------------------------------------
 # Kinematic Footprint (LiDAR Bounding Box)
 # ---------------------------------------------------------------------------
 # Bounding box for LiDAR to know what the rover is (give slight buffer for each measurement)
-ROBOT_FRONT_MM = 375.0       # Distance from rear axle to the front nose, actual 350
+ROBOT_FRONT_MM = 380.0  # 400     # Distance from rear axle to the front nose, actual 350
 ROBOT_REAR_MM = 50.0         # Distance from rear axle to the back tail, actual 40
-ROBOT_HALF_WIDTH_MM = 200.0  # Half of the total robot width, actual 165.0
+ROBOT_HALF_WIDTH_MM = 190.0  # Half of the total robot width, actual 165.0
 
 # ---------------------------------------------------------------------------
 # PATH CONFIGURATIONS - 3 Sections of Course
@@ -110,28 +110,30 @@ ROBOT_HALF_WIDTH_MM = 200.0  # Half of the total robot width, actual 165.0
 # Phase 1: Pure Pursuit Until Obstacles
 PP_PATH_CONTROL_POINTS_1 = [    # all tuned to the lookahead of 100mm
     (0.0, 0.0),           # 1st point
-    (0.0, 3520.0),        # 2nd point
-    (530.0, 3520.0),      # 3rd point 
-    (530.0, 610.0),       # 4th point
-    (1370.0, 610.0),      # 5th point
-    (1370.0, 750.0),      # 6th point, ends exactly where DWA lane starts
+    (0.0, 3460.0),        # 2nd point
+    (500.0, 3500.0),      # 3rd point
+    (520.0, 3300.0),      # intermediate point to help w/ walls before ramp
+    (540.0, 700.0),       # 4th point
+    (1370.0, 700.0),      # 5th point
+    (1370.0, 775.0),      # 6th point, ends exactly where DWA lane starts
 ]
-PP_DENSE_PATH_1 = densify_polyline(PP_PATH_CONTROL_POINTS_1, spacing=30.0)
+PP_DENSE_PATH_1 = densify_polyline(PP_PATH_CONTROL_POINTS_1, spacing=20.0)
 
 # Phase 2: DWA Algorithm for Obstacles, separate so that DWA only sees the one lane
 DWA_PATH_CONTROL_POINTS = [
-    (1370.0, 750.0),      
-    (1370.0, 3520.0),
+    (1370.0, 775.0),      
+    (1370.0, 2980.0),
 ]
 DWA_DENSE_PATH = densify_polyline(DWA_PATH_CONTROL_POINTS, spacing=20.0)
 
 # Phase 3: DWA to Finish Line
 LASTLANE_DWA_PATH_CONTROL_POINTS = [
-    (1370.0, 3520.0),     
-    (2150.0, 3520.0),
-    (2150.0, 610.0),    
+    (1370.0, 2980.0),
+    (1370.0, 3530.0),     
+    (2400.0, 3530.0),
+    (2400.0, 650.0),    
 ]
-LASTLANE_DWA_DENSE_PATH = densify_polyline(LASTLANE_DWA_PATH_CONTROL_POINTS, spacing=30.0)
+LASTLANE_DWA_DENSE_PATH = densify_polyline(LASTLANE_DWA_PATH_CONTROL_POINTS, spacing=20.0)
 
 # -----------  State Transition Thresholds  ---------------------------------
 # GPS Activation Zone (between points 3 and 4)
@@ -143,11 +145,11 @@ GPS_ZONE_Y_MAX = 3200.0
 # DWA Handoff Zone (Activates when turning into the obstacle lane)
 DWA_ZONE_X_MIN = 1100.0
 DWA_ZONE_X_MAX = 2100.0
-DWA_ZONE_Y_MIN = 700.0
+DWA_ZONE_Y_MIN = 750.0
 
 # Phase 3 Handoff Zone (Activates when leaving the obstacle lane)
 LASTLANE_ZONE_X_MIN = 1000.0
-LASTLANE_ZONE_Y_MIN = 2900.0
+LASTLANE_ZONE_Y_MIN = 2960.0
 
 
 # ---------------------------------------------------------------------------
