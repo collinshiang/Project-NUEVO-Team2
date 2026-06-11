@@ -2102,10 +2102,10 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         
         # --- Debug Logging ---
         self._node.get_logger().info(
-            f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s"
+            # f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s"
         )
         self._node.get_logger().info(
-            f"LiDAR points detected: {len(obstacles)}"
+            # f"LiDAR points detected: {len(obstacles)}"
         )
         # ---------------------
         

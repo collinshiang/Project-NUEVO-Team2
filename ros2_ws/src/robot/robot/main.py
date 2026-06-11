@@ -1,297 +1,99 @@
-# A.R.M.O.R. Full Script
-# State Architecture Driven Logic.
-# Full Mobility: Includes Traversal (Pure Pursuit), Obstacle Detection (LiDAR), and Detection (Camera Vision). No Sensing (GPS) Used.
-# Also has collision handling.
-# MAE 162E - Capstone Project
-# Group 2, Spring 2026
+"""
+auto_3d_debris_retrieval.py
+===========================
+3D manipulation sequence using the Stepper Motor for Yaw alignment.
+Includes LiDAR Clustering, UI Rendering, Backlash compensation, 
+Mast-lift payload handling, and updated Rest States.
+"""
 
 from __future__ import annotations
-import time
 import math
-import numpy as np
+import time
 
-from robot.robot import FirmwareState, Robot
-from robot.util import densify_polyline
 from robot.hardware_map import (
     Button,
     DEFAULT_FSM_HZ,
     LED,
-    Motor,
-    INITIAL_THETA_DEG,
-    LIDAR_FOV_DEG,
-    LIDAR_MOUNT_THETA_DEG,
-    LIDAR_MOUNT_X_MM,
-    LIDAR_MOUNT_Y_MM,
-    LIDAR_RANGE_MAX_MM,
-    LIDAR_RANGE_MIN_MM,
-    POSITION_UNIT,
-    TAG_BODY_OFFSET_X_MM,
-    TAG_BODY_OFFSET_Y_MM,
-    WHEEL_BASE,
-    WHEEL_DIAMETER,
-    LEFT_WHEEL_MOTOR,
-    LEFT_WHEEL_DIR_INVERTED,
-    RIGHT_WHEEL_MOTOR,
-    RIGHT_WHEEL_DIR_INVERTED,
+    ServoChannel,
+    Stepper,
+    StepMoveType,
 )
+from robot.robot import FirmwareState, Robot
 
 # ---------------------------------------------------------------------------
-# Sensor Toggles
+# Physical Geometry Configuration (Arm & Servos)
 # ---------------------------------------------------------------------------
-ENABLE_LIDAR     = True
-ENABLE_GPS       = False    # currently only defined on ramp. can expand easily if needed
-ENABLE_VISION    = False
-ENABLE_STOP_SIGN = False  
+Z_LIDAR = 120.0
+Z_LTS = 85.0
+Z_SS = 8.5
+L_1 = 54.2
+L_J2J3 = 201.0
+L_J3EE = 330.0
+Y_0 = -115.0  # Forward offset from LiDAR to Stepper Pivot
+
+Z_0 = Z_LIDAR + Z_LTS + Z_SS
+SHOULDER_OFFSET = Z_0 + L_1  
+
+SHOULDER_SERVO = ServoChannel.CH_1
+ELBOW_SERVO = ServoChannel.CH_2
+GRIPPER_SERVO = ServoChannel.CH_3
+
+# --- 2 DEGREE HARDWARE SAFETY LIMITS ---
+SHOULDER_MIN = 2.0
+SHOULDER_MAX = 178.0
+ELBOW_MIN = 2.0
+ELBOW_MAX = 178.0
+
+# --- TARGET ARM STATES ---
+SHOULDER_REST_DEG = 178.0    # Updated Folded Position
+ELBOW_REST_DEG = 2.0         # Updated Folded Position
+SHOULDER_MAST_DEG = 90.0     # Straight up
+ELBOW_MAST_DEG = 178.0       # Clamped safe equivalent of 180
+
+GRIPPER_OPEN_DEG = 178.0     # Clamped safe equivalent of 180
+GRIPPER_CLOSE_DEG = 90.0
 
 # ---------------------------------------------------------------------------
-# Vision Configuration
+# Perception & Stepper Configuration
 # ---------------------------------------------------------------------------
+ENABLE_VISION = True
 VISION_STALE_SEC = 3.0
-MIN_TRAFFIC_LIGHT_CONFIDENCE = 0.50  # higher = more skeptical   
-MIN_STOP_SIGN_CONFIDENCE = 0.50  
 
-# ---------------------------------------------------------------------------
-# Pure Pursuit & GPS Configuration (Phase 1)
-# ---------------------------------------------------------------------------
-TAG_ID = 13                 
-GPS_POSITION_ALPHA = 0.01   
+SCAN_FOV_DEG = 60.0
+DEBRIS_MIN_DIST_MM = 100.0
+DEBRIS_MAX_DIST_MM = 600.0
+CLUSTER_TOLERANCE_MM = 80.0  # Points within 80mm are considered the same object
+ISOLATION_RADIUS_MM = 100.0  # The object must be 200mm away from other objects
+PICK_Z_HEIGHT_MM = 10.0      
 
-PP_VELOCITY_MM_S = 225.0  # Higher speed for open track
-PP_ANGULAR_VEL = 1.0      # lower for more precise turns
-PP_LOOKAHEAD_MM = 60.0    # 60                                 
-PP_TOLERANCE_MM = 20.0
-
-# ---------------------------------------------------------------------------
-# DWA Obstacle Avoidance Configuration (Phase 2)
-# ---------------------------------------------------------------------------
-# These limits ensure the planner doesn't demand impossible speeds/turns
-DWA_MAX_VEL_MM_S = 160.0  # Slower, careful speed for cones
-DWA_MAX_ACC_MM_S2 = 500.0  
-DWA_MAX_ANGULAR_RAD_S = 1.5
-DWA_MAX_ANGULAR_ACC_RAD_S2 = 5.0
-
-# Trajectory generation parameters
-DWA_PREDICT_TIME_S = 4.0        
-DWA_VELOCITY_SAMPLES = [7, 15]  # [linear_samples, angular_samples] - num. of calculated paths
-
-# Cost Weights: [heading_gain, clearance_gain, velocity_gain]
-DWA_COST_GAINS = [1.0, 1.5, 2.0]
-DWA_LOOKAHEAD_MM = 300.0        # Unique lookahead for DWA (won't matter too much)
-DWA_TOLERANCE_MM = 50.0        # Goal point tolerance 
-
-# Distance at which an obstacle starts generating a cost. 
-DWA_OBSTACLES_RANGE_MM = 600.0  
-
-# ---------------------------------------------------------------------------
-# LASTLANE DWA Configuration (Phase 3)
-# ---------------------------------------------------------------------------
-LASTLANE_DWA_MAX_VEL_MM_S = 200.0  
-LASTLANE_DWA_MAX_ACC_MM_S2 = 500.0  
-LASTLANE_DWA_MAX_ANGULAR_RAD_S = 1.5
-LASTLANE_DWA_MAX_ANGULAR_ACC_RAD_S2 = 5.0
-LASTLANE_DWA_PREDICT_TIME_S = 1.5        
-LASTLANE_DWA_VELOCITY_SAMPLES = [5, 9] 
-LASTLANE_DWA_COST_GAINS = [2.0, 1.0, 2.0]
-LASTLANE_DWA_LOOKAHEAD_MM = 80.0        
-LASTLANE_DWA_TOLERANCE_MM = 50.0        
-LASTLANE_DWA_OBSTACLES_RANGE_MM = 140.0
-
-# ---------------------------------------------------------------------------
-# Kinematic Footprint (LiDAR Bounding Box)
-# ---------------------------------------------------------------------------
-# Bounding box for LiDAR to know what the rover is (give slight buffer for each measurement)
-ROBOT_FRONT_MM = 380.0  # 400     # Distance from rear axle to the front nose, actual 350
-ROBOT_REAR_MM = 50.0         # Distance from rear axle to the back tail, actual 40
-ROBOT_HALF_WIDTH_MM = 190.0  # Half of the total robot width, actual 165.0
-
-# ---------------------------------------------------------------------------
-# PATH CONFIGURATIONS - 3 Sections of Course
-# ---------------------------------------------------------------------------
-# Phase 1: Pure Pursuit Until Obstacles
-PP_PATH_CONTROL_POINTS_1 = [    # all tuned to the lookahead of 100mm
-    (0.0, 0.0),           # 1st point
-    (0.0, 3460.0),        # 2nd point
-    (500.0, 3500.0),      # 3rd point
-    (520.0, 3300.0),      # intermediate point to help w/ walls before ramp
-    (540.0, 700.0),       # 4th point
-    (1370.0, 700.0),      # 5th point
-    (1370.0, 775.0),      # 6th point, ends exactly where DWA lane starts
-]
-PP_DENSE_PATH_1 = densify_polyline(PP_PATH_CONTROL_POINTS_1, spacing=20.0)
-
-# Phase 2: DWA Algorithm for Obstacles, separate so that DWA only sees the one lane
-DWA_PATH_CONTROL_POINTS = [
-    (1370.0, 775.0),      
-    (1370.0, 2980.0),
-]
-DWA_DENSE_PATH = densify_polyline(DWA_PATH_CONTROL_POINTS, spacing=20.0)
-
-# Phase 3: DWA to Finish Line
-LASTLANE_DWA_PATH_CONTROL_POINTS = [
-    (1370.0, 2980.0),
-    (1370.0, 3530.0),     
-    (2400.0, 3530.0),
-    (2400.0, 650.0),    
-]
-LASTLANE_DWA_DENSE_PATH = densify_polyline(LASTLANE_DWA_PATH_CONTROL_POINTS, spacing=20.0)
-
-# -----------  State Transition Thresholds  ---------------------------------
-# GPS Activation Zone (between points 3 and 4)
-GPS_ZONE_X_MIN = 300.0
-GPS_ZONE_X_MAX = 1000.0
-GPS_ZONE_Y_MIN = 1100.0
-GPS_ZONE_Y_MAX = 3200.0
-
-# DWA Handoff Zone (Activates when turning into the obstacle lane)
-DWA_ZONE_X_MIN = 1100.0
-DWA_ZONE_X_MAX = 2100.0
-DWA_ZONE_Y_MIN = 750.0
-
-# Phase 3 Handoff Zone (Activates when leaving the obstacle lane)
-LASTLANE_ZONE_X_MIN = 1000.0
-LASTLANE_ZONE_Y_MIN = 2960.0
+# --- STEPPER YAW CONFIGURATION ---
+BASE_STEPPER = Stepper.STEPPER_1
+STEPS_PER_REV = 3200.0
+BASE_STEPPER_VEL = 30           # Max steps per second
+BACKLASH_STEPS = 35             # Slack compensation 
+DISCARD_ADDITIONAL_TURN_DEG = 90.0
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def configure_robot(robot: Robot) -> None:
-    robot.set_unit(POSITION_UNIT)
-    robot.set_odometry_parameters(
-        wheel_diameter=WHEEL_DIAMETER,
-        wheel_base=WHEEL_BASE,
-        initial_theta_deg=INITIAL_THETA_DEG,
-        left_motor_id=LEFT_WHEEL_MOTOR,
-        left_motor_dir_inverted=LEFT_WHEEL_DIR_INVERTED,
-        right_motor_id=RIGHT_WHEEL_MOTOR,
-        right_motor_dir_inverted=RIGHT_WHEEL_DIR_INVERTED,
-    )
+class ArmKinematics3D:
+    def calculate_ik(self, r_target_mm: float, z_target_mm: float) -> tuple[float, float]:
+        r_arm = r_target_mm               
+        z_arm = z_target_mm - SHOULDER_OFFSET   
 
-    if ENABLE_LIDAR:
-        robot.enable_lidar()
-        robot.set_lidar_mount(
-            x_mm=LIDAR_MOUNT_X_MM,
-            y_mm=LIDAR_MOUNT_Y_MM,
-            theta_deg=LIDAR_MOUNT_THETA_DEG,
-        )
-        robot.set_lidar_filter(
-            range_min_mm=LIDAR_RANGE_MIN_MM,
-            range_max_mm=LIDAR_RANGE_MAX_MM,
-            fov_deg=LIDAR_FOV_DEG,
-        )
-        robot.start_lidar_world_publisher()
-        print("[sensor] lidar enabled — subscribing to /scan")
-
-    if ENABLE_GPS:
-        robot.enable_gps()
-        robot.set_tracked_tag_id(TAG_ID)
-        robot.set_tag_body_offset(TAG_BODY_OFFSET_X_MM, TAG_BODY_OFFSET_Y_MM)
-        robot.set_gps_offset(-20.7, -201.8) 
+        d = math.hypot(r_arm, z_arm)
+        max_reach = L_J2J3 + L_J3EE
+        if d > max_reach or d < abs(L_J2J3 - L_J3EE):
+            raise ValueError(f"Target unreachable. Distance from shoulder is {d:.1f}mm (Max: {max_reach}mm)")
+       
+        D = (r_arm**2 + z_arm**2 - L_J2J3**2 - L_J3EE**2) / (2 * L_J2J3 * L_J3EE)
+        D = max(min(D, 1.0), -1.0)
         
-        # Start with GPS Fusion OFF
-        robot.set_position_fusion_alpha(0.0)
-        print(f"[sensor] GPS enabled — Tracking ArUco tag {TAG_ID} (Fusion starting OFF)")
-        
-    if ENABLE_VISION:
-        robot.enable_vision()
-        print("[sensor] Vision enabled — subscribing to YOLO detections")
-
-
-def load_dwa_profile(robot: Robot, profile_type: str, period: float):
-    """Injects either Phase 2 or Phase 3 DWA parameters into the Robot's planner."""
-    if profile_type == "DWA":
-        print("[CFG] Loading DWA Profile (Phase 2)")
-        robot._init_dwa_planner(
-            max_vel_mm=DWA_MAX_VEL_MM_S,
-            max_acc_mm=DWA_MAX_ACC_MM_S2,
-            max_angular_rad=DWA_MAX_ANGULAR_RAD_S,
-            max_angular_acc_rad=DWA_MAX_ANGULAR_ACC_RAD_S2,
-            lookahead_mm=DWA_LOOKAHEAD_MM,
-            robot_front_mm=ROBOT_FRONT_MM,
-            robot_rear_mm=ROBOT_REAR_MM,
-            robot_half_width_mm=ROBOT_HALF_WIDTH_MM,
-            tolerance_mm=DWA_TOLERANCE_MM,
-            gains_of_costs=DWA_COST_GAINS,
-            period=period,
-            predict_time=DWA_PREDICT_TIME_S,
-            predict_velocity_samples_resolution=DWA_VELOCITY_SAMPLES,
-            obstacles_range_mm=DWA_OBSTACLES_RANGE_MM,
-            ttc_weight=0.0
-        )
-    elif profile_type == "LASTLANE":
-        print("[CFG] Loading LASTLANE DWA Profile (Phase 3)")
-        robot._init_dwa_planner(
-            max_vel_mm=LASTLANE_DWA_MAX_VEL_MM_S,
-            max_acc_mm=LASTLANE_DWA_MAX_ACC_MM_S2,
-            max_angular_rad=LASTLANE_DWA_MAX_ANGULAR_RAD_S,
-            max_angular_acc_rad=LASTLANE_DWA_MAX_ANGULAR_ACC_RAD_S2,
-            lookahead_mm=LASTLANE_DWA_LOOKAHEAD_MM,
-            robot_front_mm=ROBOT_FRONT_MM,
-            robot_rear_mm=ROBOT_REAR_MM,
-            robot_half_width_mm=ROBOT_HALF_WIDTH_MM,
-            tolerance_mm=LASTLANE_DWA_TOLERANCE_MM,
-            gains_of_costs=LASTLANE_DWA_COST_GAINS,
-            period=period,
-            predict_time=LASTLANE_DWA_PREDICT_TIME_S,
-            predict_velocity_samples_resolution=LASTLANE_DWA_VELOCITY_SAMPLES,
-            obstacles_range_mm=LASTLANE_DWA_OBSTACLES_RANGE_MM,
-            ttc_weight=0.0
+        theta3_rad = math.atan2(-math.sqrt(1 - D**2), D)
+        theta2_rad = math.atan2(z_arm, r_arm) - math.atan2(
+            L_J3EE * math.sin(theta3_rad), 
+            L_J2J3 + L_J3EE * math.cos(theta3_rad)
         )
 
-
-def start_pp_path_1(robot: Robot):
-    """Starts the Phase 1 Pure Pursuit thread."""
-    return robot.purepursuit_follow_path(
-        waypoints=PP_DENSE_PATH_1,
-        velocity=PP_VELOCITY_MM_S,
-        lookahead=PP_LOOKAHEAD_MM,
-        tolerance=PP_TOLERANCE_MM,
-        advance_radius=PP_LOOKAHEAD_MM, 
-        max_angular_rad_s=PP_ANGULAR_VEL,
-        blocking=False, 
-    )
-
-
-def check_collision(robot: Robot) -> bool:
-    """Watchdog: Manually scans LiDAR point cloud for obstacles in the forward driving path."""
-    if not ENABLE_LIDAR:
-        return False
-        
-    with robot._lock:
-        obstacles = robot._obstacles_mm.copy()
-        
-    if obstacles.size > 0:
-        obs_x = obstacles[:, 0] + LIDAR_MOUNT_X_MM
-        obs_y = obstacles[:, 1] + LIDAR_MOUNT_Y_MM
-        
-        in_front_mask = (obs_x > 0) & (np.abs(obs_y) < (ROBOT_HALF_WIDTH_MM + 50.0))
-        if np.any(in_front_mask):
-            closest_fwd = np.min(obs_x[in_front_mask])
-            if closest_fwd < (ROBOT_FRONT_MM + 120.0):
-                return True
-    return False
-
-
-def find_traffic_light_color(robot: Robot) -> str | None:
-    if not robot.is_vision_active(timeout_s=VISION_STALE_SEC):
-        return None
-    best_color, best_confidence = None, -1.0
-    for detection in robot.get_detections("traffic light"):
-        confidence = float(detection["confidence"])
-        if confidence < MIN_TRAFFIC_LIGHT_CONFIDENCE: continue
-        color = detection.get("attributes", {}).get("color", {}).get("value")
-        if color not in ("red", "green"): continue
-        if confidence > best_confidence:
-            best_confidence = confidence
-            best_color = str(color)
-    return best_color
-
-
-def is_stop_sign_detected(robot: Robot) -> bool:
-    if not robot.is_vision_active(timeout_s=VISION_STALE_SEC): return False
-    for sign in robot.get_detections("stop sign"):
-        if float(sign["confidence"]) >= MIN_STOP_SIGN_CONFIDENCE: return True
-    return False
+        return math.degrees(theta2_rad), math.degrees(theta3_rad)
 
 
 def start_robot(robot: Robot) -> None:
@@ -299,272 +101,246 @@ def start_robot(robot: Robot) -> None:
     if current in (FirmwareState.ESTOP, FirmwareState.ERROR):
         robot.reset_estop()
     robot.set_state(FirmwareState.RUNNING)
-    robot.reset_odometry()
-    robot.wait_for_pose_update(timeout=0.2)
 
+def stow_arm(robot: Robot) -> None:
+    print(f"[ACTUATE] Stowing Arm safely to {SHOULDER_REST_DEG}/{ELBOW_REST_DEG}...")
+    robot.set_servo(SHOULDER_SERVO, max(SHOULDER_MIN, min(SHOULDER_MAX, SHOULDER_REST_DEG)))
+    robot.set_servo(ELBOW_SERVO, max(ELBOW_MIN, min(ELBOW_MAX, ELBOW_REST_DEG)))
 
-def show_idle_leds(robot: Robot) -> None:
-    robot.set_led(LED.ORANGE, 200)
-    robot.set_led(LED.GREEN, 0)
-
-
-def show_running_leds(robot: Robot) -> None:
-    robot.set_led(LED.ORANGE, 0)
-    robot.set_led(LED.GREEN, 200)
-
-
-# ---------------------------------------------------------------------------
-# FSM run() loop
-# ---------------------------------------------------------------------------
-def run(robot: Robot) -> None:
-    time.sleep(0.5) 
-    configure_robot(robot)
-
-    state = "INIT"
-    previous_state = ""
-    recovery_ticks = 0
+def move_servos_slowly(robot: Robot, curr_s: float, curr_e: float, target_s: float, target_e: float, step_deg=2.0, delay_s=0.02) -> None:
+    safe_target_s = max(SHOULDER_MIN, min(SHOULDER_MAX, target_s))
+    safe_target_e = max(ELBOW_MIN, min(ELBOW_MAX, target_e))
     
-    drive_handle = None
-    is_gps_fusion_active = False
+    diff_s = safe_target_s - curr_s
+    diff_e = safe_target_e - curr_e
+    
+    max_diff = max(abs(diff_s), abs(diff_e))
+    num_steps = int(math.ceil(max_diff / step_deg))
+    
+    if num_steps <= 0: return
 
+    for i in range(1, num_steps + 1):
+        fraction = i / float(num_steps)
+        robot.set_servo(SHOULDER_SERVO, curr_s + (diff_s * fraction))
+        robot.set_servo(ELBOW_SERVO, curr_e + (diff_e * fraction))
+        time.sleep(delay_s)
+
+def command_yaw_stepper(robot: Robot, steps: int) -> None:
+    if steps == 0: return
+    robot.move_stepper(BASE_STEPPER, steps, BASE_STEPPER_VEL, StepMoveType.RELATIVE)
+    
+    sleep_time = (abs(steps) / float(BASE_STEPPER_VEL)) + 0.1
+    time.sleep(sleep_time)
+
+def find_traffic_light_color(robot: Robot) -> str | None:
+    if not ENABLE_VISION or not robot.is_vision_active(timeout_s=VISION_STALE_SEC):
+        return None
+    for detection in robot.get_detections("traffic light"):
+        color = detection.get("attributes", {}).get("color", {}).get("value")
+        if color == "green" and float(detection["confidence"]) >= 0.50:
+            return "green"
+    return None
+
+def scan_for_debris(robot: Robot, fov_limit_deg: float) -> tuple[float, float] | None:
+    obstacles = robot.get_obstacles()
+    if not obstacles: return None
+
+    valid_points = []
+    fov_rad = math.radians(fov_limit_deg)
+    
+    # 1. Filter points by FOV and Range
+    for ox, oy in obstacles:
+        dist = math.hypot(ox, oy)
+        angle = math.atan2(oy, ox)
+        if DEBRIS_MIN_DIST_MM < dist < DEBRIS_MAX_DIST_MM and abs(angle) <= fov_rad:
+            valid_points.append((ox, oy))
+
+    if not valid_points: return None
+
+    # 2. Cluster the points (Groups points belonging to the same object)
+    clusters = []
+    for pt in valid_points:
+        placed = False
+        for cluster in clusters:
+            # Check distance against the first point in the cluster
+            if math.hypot(pt[0] - cluster[0][0], pt[1] - cluster[0][1]) < CLUSTER_TOLERANCE_MM:
+                cluster.append(pt)
+                placed = True
+                break
+        if not placed:
+            clusters.append([pt])
+
+    # 3. Calculate the center (centroid) of each cluster
+    centroids = []
+    for cluster in clusters:
+        cx = sum(p[0] for p in cluster) / len(cluster)
+        cy = sum(p[1] for p in cluster) / len(cluster)
+        centroids.append((cx, cy))
+
+    # 4. Find the closest isolated cluster
+    best_target = None
+    min_dist = float('inf')
+
+    for i, (cx1, cy1) in enumerate(centroids):
+        isolated = True
+        for j, (cx2, cy2) in enumerate(centroids):
+            if i != j and math.hypot(cx2 - cx1, cy2 - cy1) < ISOLATION_RADIUS_MM:
+                isolated = False
+                break
+        
+        if isolated:
+            dist = math.hypot(cx1, cy1)
+            if dist < min_dist:
+                min_dist = dist
+                best_target = (cx1, cy1)
+
+    return best_target
+
+
+def run(robot: Robot) -> None:
+    state = "INIT"
     period = 1.0 / float(DEFAULT_FSM_HZ)
-    print(f"FSM period: {period:.3f} seconds")
     next_tick = time.monotonic()
+    
+    ik_solver = ArmKinematics3D()
+    
+    curr_shoulder = SHOULDER_REST_DEG
+    curr_elbow = ELBOW_REST_DEG
+    
+    current_yaw_deg = 0.0
+    last_move_direction = 1   
 
     while True:
-        now = time.monotonic()
-
         if state == "INIT":
             start_robot(robot)
-            print("[FSM] INIT (odometry reset)")
-            print("[FSM] IDLE - Press BTN_1 or show GREEN LIGHT to begin Phase 1.")
+            robot.enable_lidar()
+            if ENABLE_VISION: robot.enable_vision()
+                
+            robot.enable_servo(SHOULDER_SERVO)
+            robot.enable_servo(ELBOW_SERVO)
+            robot.enable_servo(GRIPPER_SERVO)
+            
+            stow_arm(robot)
+            robot.set_servo(GRIPPER_SERVO, GRIPPER_OPEN_DEG)
+            time.sleep(2.0) 
+            
+            print("\n[FSM] READY. Press BTN_1 or show GREEN LIGHT to begin.")
+            robot.set_led(LED.ORANGE, 200)
+            robot.set_led(LED.GREEN, 0)
             state = "IDLE"
 
         elif state == "IDLE":
-            show_idle_leds(robot)
-            
-            button_pressed = robot.get_button(Button.BTN_1)
-            green_light_seen = ENABLE_VISION and find_traffic_light_color(robot) == "green"
+            # Force LiDAR to render on the UI
+            if hasattr(robot, "_draw_lidar_obstacles"):
+                robot._draw_lidar_obstacles()
+                
+            button_pressed = robot.was_button_pressed(Button.BTN_1)
+            green_light_seen = (find_traffic_light_color(robot) == "green")
             
             if button_pressed or green_light_seen:
-                start_robot(robot) 
-                show_running_leds(robot)
-                if green_light_seen:
-                    print("[VISION] Green light detected! Start Moving via Pure Pursuit (Phase 1)!")
-                else:
-                    print("[UI] BTN_1 pressed. Start Moving via Pure Pursuit (Phase 1)!")
-                    
-                drive_handle = start_pp_path_1(robot)
-                state = "MOVING_PHASE_1"
-            
-            if robot.get_button(Button.BTN_2):
-                print("BTN_2 pressed. Stopping robot.")
-                robot.shutdown()
+                robot.set_led(LED.ORANGE, 0)
+                robot.set_led(LED.GREEN, 200)
+                print("\n[FSM] Triggered! Scanning for debris...")
+                state = "SCAN_FOR_DEBRIS"
 
+        elif state == "SCAN_FOR_DEBRIS":
+            # Force LiDAR to render on the UI while scanning
+            if hasattr(robot, "_draw_lidar_obstacles"):
+                robot._draw_lidar_obstacles()
+                
+            target = scan_for_debris(robot, fov_limit_deg=SCAN_FOV_DEG)
+            if target:
+                tx, ty = target
+                
+                # Transform to Stepper Pivot Frame
+                dx = tx - Y_0   
+                dy = ty         
+                
+                target_yaw_deg = math.degrees(math.atan2(dy, dx))
+                target_dist_mm = math.hypot(dx, dy)
+                
+                print(f"[PERCEPTION] Debris cluster found at Stepper-Relative R:{target_dist_mm:.1f}mm, Yaw:{target_yaw_deg:.1f}°")
+                state = "ALIGN_BASE"
 
-        # ==============================================================================
-        # PHASE 1: PURE PURSUIT
-        # ==============================================================================
-        elif state == "MOVING_PHASE_1":
-            show_running_leds(robot)
+        elif state == "ALIGN_BASE":
+            delta_deg = target_yaw_deg - current_yaw_deg
+            steps_to_move = int(delta_deg * (STEPS_PER_REV / 360.0))
             
-            # --- Location Tracking for Fencing ---
-            pose = robot.get_fused_pose() if (ENABLE_GPS and robot.has_fused_pose()) else robot.get_odometry_pose()
-            current_x = pose[0]
-            current_y = pose[1]
+            move_direction = 1 if steps_to_move >= 0 else -1
             
-            # --- CHECK IF WITHIN GPS RANGE FOR RAMP ---
-            in_gps_zone = (GPS_ZONE_X_MIN < current_x < GPS_ZONE_X_MAX) and (GPS_ZONE_Y_MIN < current_y < GPS_ZONE_Y_MAX)
-            if in_gps_zone and not is_gps_fusion_active and ENABLE_GPS:
-                robot.set_position_fusion_alpha(GPS_POSITION_ALPHA)
-                is_gps_fusion_active = True
-                print(f"[GPS] Entering GPS Zone. Fusion ENABLED (alpha={GPS_POSITION_ALPHA})")
-            elif not in_gps_zone and is_gps_fusion_active and ENABLE_GPS:
-                robot.set_position_fusion_alpha(0.0)
-                is_gps_fusion_active = False
-                print("[GPS] Leaving GPS Zone. Fusion DISABLED (alpha=0.0)")
-                
-            # --- DWA TRANSITION (Phase 1 -> 2) ---
-            if (DWA_ZONE_X_MIN < current_x < DWA_ZONE_X_MAX) and (current_y > DWA_ZONE_Y_MIN):
-                if drive_handle is not None:
-                    drive_handle.cancel()
-                    drive_handle.wait(timeout=1.0)
-                    drive_handle = None
-                
-                print("\n[FSM] ----------------------------------------------------")
-                print("[FSM] OBSTACLE PORTION REACHED: Rover has turned into the DWA lane.")
-                print("[FSM] Terminating Phase 1 and Engaging DWA Planner...")
-                print("[FSM] ----------------------------------------------------\n")
-                
-                load_dwa_profile(robot, "DWA", period)
-                state = "MOVING_PHASE_2"
-                continue
-            
-            # --- Emergency Stop (Vision & UI) ---
-            button_pressed = robot.get_button(Button.BTN_2)
-            stop_sign_seen = False
-            if ENABLE_VISION and ENABLE_STOP_SIGN:
-                stop_sign_seen = is_stop_sign_detected(robot)
-            
-            if button_pressed or stop_sign_seen:
-                if stop_sign_seen: print("[VISION] Stop sign detected! Stopping robot.")
-                else: print("[UI] BTN_2 pressed. Stopping robot.")
-                    
-                if drive_handle is not None:
-                    drive_handle.cancel()
-                    drive_handle.wait(timeout=1.0)
-                    drive_handle = None
-                robot.stop()
-                print("Path cancelled. Returning to IDLE.")
-                state = "IDLE"
-                
-            # --- Perception Watchdog (Collision Check) ---
-            # elif check_collision(robot):
-            #     if drive_handle is not None:
-            #         drive_handle.cancel()
-            #         drive_handle.wait(timeout=1.0)
-            #         drive_handle = None
-            #     print("\n[FSM] Collision detected in Phase 1! Halting...")
-            #     previous_state = state  
-            #     state = "RECOVERY"
-                
+            if move_direction != last_move_direction and steps_to_move != 0:
+                print(f"[STEPPER] Direction change! Adding {BACKLASH_STEPS} steps backlash compensation.")
+                steps_to_command = steps_to_move + (move_direction * BACKLASH_STEPS)
             else:
-                if drive_handle is not None and drive_handle.is_finished():
-                    # Failsafe: if PP1 finishes early but it's near the DWA zone, hand off.
-                    if current_x > DWA_ZONE_X_MIN:
-                        print("\n[FSM] PP_1 Target reached early! Failsafe Engaging DWA Planner...\n")
-                        load_dwa_profile(robot, "DWA", period)
-                        state = "MOVING_PHASE_2"
-                    else:
-                        print("MOVING_PHASE_1: Target reached unexpectedly. Stopping.")
-                        drive_handle = None
-                        robot.stop()
-                        state = "IDLE"
-
-
-        # ==============================================================================
-        # PHASE 2: DWA
-        # ==============================================================================
-        elif state == "MOVING_PHASE_2":
-            # --- Location Tracking for Fencing ---
-            pose = robot.get_fused_pose() if (ENABLE_GPS and robot.has_fused_pose()) else robot.get_odometry_pose()
-            current_x = pose[0]
-            current_y = pose[1]
-
-            # --- PHASE 3 HANDOFF LOGIC (Phase 2 -> 3) ---
-            if current_y > LASTLANE_ZONE_Y_MIN and current_x > LASTLANE_ZONE_X_MIN:
-                robot.stop()
-                print("\n[FSM] ----------------------------------------------------")
-                print(f"[FSM] Y > {LASTLANE_ZONE_Y_MIN} REACHED: End of Obstacle Lane.")
-                print("[FSM] Terminating Phase 2 and Engaging Phase 3 LASTLANE DWA...")
-                print("[FSM] ----------------------------------------------------\n")
+                steps_to_command = steps_to_move
                 
-                load_dwa_profile(robot, "LASTLANE", period)
-                state = "MOVING_PHASE_3"
-                continue
+            last_move_direction = move_direction
+            current_yaw_deg = target_yaw_deg  
+            
+            print(f"[STEPPER] Swiveling {delta_deg:.1f}° ({steps_to_command} steps) at {BASE_STEPPER_VEL} steps/s...")
+            command_yaw_stepper(robot, steps_to_command)
+            
+            state = "REACH_ARM"
 
-            # --- Emergency Stop (Vision & UI) ---
-            button_pressed = robot.was_button_pressed(Button.BTN_2)
-            stop_sign_seen = False
-            if ENABLE_VISION and ENABLE_STOP_SIGN:
-                stop_sign_seen = is_stop_sign_detected(robot)
+        elif state == "REACH_ARM":
+            print(f"[IK] Reaching arm {target_dist_mm:.1f}mm outwards...")
+            try:
+                t2_raw, t3_raw = ik_solver.calculate_ik(r_target_mm=target_dist_mm, z_target_mm=PICK_Z_HEIGHT_MM)
+                
+                move_servos_slowly(robot, curr_shoulder, curr_elbow, t2_raw, t3_raw + 180.0)
+                curr_shoulder = max(SHOULDER_MIN, min(SHOULDER_MAX, t2_raw))
+                curr_elbow = max(ELBOW_MIN, min(ELBOW_MAX, t3_raw + 180.0))
+                
+                state = "GRAB_AND_MAST"
+            except ValueError as e:
+                print(f"[ERROR] {e} - Returning to scan.")
+                state = "SCAN_FOR_DEBRIS"
 
-            if button_pressed or stop_sign_seen:
-                robot.stop()
-                show_idle_leds(robot)
-                if stop_sign_seen: print("[VISION] Stop sign detected! Stopping robot.")
-                else: print("[FSM] IDLE — DWA navigation cancelled via UI")
-                state = "IDLE"
+        elif state == "GRAB_AND_MAST":
+            print("[ACTUATE] Gripping object...")
+            robot.set_servo(GRIPPER_SERVO, GRIPPER_CLOSE_DEG)
+            time.sleep(1.0)
+            
+            print("[ACTUATE] Pulling into vertical MAST position (90/178) to reduce torque...")
+            move_servos_slowly(robot, curr_shoulder, curr_elbow, SHOULDER_MAST_DEG, ELBOW_MAST_DEG)
+            curr_shoulder, curr_elbow = SHOULDER_MAST_DEG, ELBOW_MAST_DEG
+            
+            state = "DISCARD_AND_STOW"
+
+        elif state == "DISCARD_AND_STOW":
+            discard_delta = DISCARD_ADDITIONAL_TURN_DEG * last_move_direction
+            discard_steps = int(discard_delta * (STEPS_PER_REV / 360.0))
+            
+            print(f"[STEPPER] Swinging {discard_delta}° further to discard (Direction maintained).")
+            command_yaw_stepper(robot, discard_steps)
+            current_yaw_deg += discard_delta
+            
+            robot.set_servo(GRIPPER_SERVO, GRIPPER_OPEN_DEG)
+            time.sleep(1.0)
+            
+            home_delta = 0.0 - current_yaw_deg
+            home_steps = int(home_delta * (STEPS_PER_REV / 360.0))
+            home_direction = 1 if home_steps >= 0 else -1
+            
+            if home_direction != last_move_direction and home_steps != 0:
+                home_command = home_steps + (home_direction * BACKLASH_STEPS)
             else:
-                # Execute one tick of DWA navigation
-                status = robot._nav_follow_path_loop(DWA_DENSE_PATH, period)
-
-                if status == "IDLE":
-                    # Failsafe if DWA finishes before Geofence
-                    print("\n[FSM] DWA Reached target early! Failsafe Engaging Phase 3...\n")
-                    load_dwa_profile(robot, "LASTLANE", period)
-                    state = "MOVING_PHASE_3"
-                elif status == "COLLISION":
-                    print("\n[FSM] Collision detected in Phase 2! Halting...")
-                    previous_state = state  
-                    state = "RECOVERY"
-
-
-        # ==============================================================================
-        # PHASE 3: LASTLANE DWA
-        # ==============================================================================
-        elif state == "MOVING_PHASE_3":
-            show_running_leds(robot)
-            
-            # --- Emergency Stop (Vision & UI) ---
-            button_pressed = robot.was_button_pressed(Button.BTN_2)
-            stop_sign_seen = False
-            if ENABLE_VISION and ENABLE_STOP_SIGN:
-                stop_sign_seen = is_stop_sign_detected(robot)
-            
-            if button_pressed or stop_sign_seen:
-                robot.stop()
-                show_idle_leds(robot)
-                if stop_sign_seen: print("[VISION] Stop sign detected! Stopping robot.")
-                else: print("[UI] BTN_2 pressed. Stopping robot.")
-                state = "IDLE"
-            else:
-                status = robot._nav_follow_path_loop(LASTLANE_DWA_DENSE_PATH, period)
+                home_command = home_steps
                 
-                if status == "IDLE":
-                    print("[FSM] DONE — Final Phase 3 Goal complete!")
-                    robot.stop()
-                    show_idle_leds(robot)
-                    print("[FSM] IDLE — Course finished.")
-                    
-                    if is_gps_fusion_active and ENABLE_GPS:
-                        robot.set_position_fusion_alpha(0.0)
-                        is_gps_fusion_active = False
-                        
-                    state = "IDLE"
-                elif status == "COLLISION":
-                    print("\n[FSM] Collision detected in Phase 3! Halting...")
-                    previous_state = state  
-                    state = "RECOVERY"
-
-
-        # ==============================================================================
-        # COLLISION RECOVERY
-        # ==============================================================================
-        elif state == "RECOVERY":
-            show_running_leds(robot)
+            last_move_direction = home_direction
+            current_yaw_deg = 0.0
             
-            if recovery_ticks == 0:
-                print(f"\n[FSM] Executing Universal Backup Recovery...")
-
-            # Back up in a straight line slowly. No turning.
-            robot._send_body_velocity_mm(-100.0, 0.0)
-            recovery_ticks += 1
+            print("[STEPPER] Returning to 0° Home...")
+            command_yaw_stepper(robot, home_command)
             
-            # Execute maneuver for exactly 1.5 seconds
-            max_recovery_ticks = int(1.5 * float(DEFAULT_FSM_HZ))
+            # Fold back to new 178/2 target
+            move_servos_slowly(robot, curr_shoulder, curr_elbow, SHOULDER_REST_DEG, ELBOW_REST_DEG)
+            curr_shoulder, curr_elbow = SHOULDER_REST_DEG, ELBOW_REST_DEG
             
-            if recovery_ticks >= max_recovery_ticks:
-                robot.stop()
-                recovery_ticks = 0  
-                
-                print(f"[FSM] Recovery Complete! Resuming {previous_state}...\n")
-                
-                # If we crashed in Phase 1, we must re-spin the Pure Pursuit thread.
-                # Since pure pursuit auto-snaps to nearest neighbor, it's perfectly safe to re-init.
-                if previous_state == "MOVING_PHASE_1":
-                    drive_handle = start_pp_path_1(robot)
-                    
-                state = previous_state
+            print("\n[FSM] Sequence complete. Scanning for next object...")
+            state = "SCAN_FOR_DEBRIS"
 
-            # Retain UI control during recovery
-            if robot.was_button_pressed(Button.BTN_2):
-                robot.stop()
-                print("[UI] BTN_2 pressed during recovery. Stopping robot.")
-                recovery_ticks = 0
-                state = "IDLE"
-
-        # FSM refresh rate control
+        # --- FSM Timing ---
         next_tick += period
         sleep_s = next_tick - time.monotonic()
         if sleep_s > 0.0:

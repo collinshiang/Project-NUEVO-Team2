@@ -2,7 +2,10 @@
 manipulator.py — cylinder detection and grab sequence for the 3-DOF arm.
 
 Joint mapping (per hardware):
-  Yaw   — stepper 1         (swivel)
+  Yaw   — stepper 1         (swivel) — DISABLED, mechanically out of service.
+                               Robot must be physically pre-aligned so the
+                               cylinder is directly ahead (Y ≈ 0) before
+                               calling grab_cylinder().
   J2    — servo 1           (shoulder/elevator: 180°=retracted, 0°=extended)
   J3    — servo 2           (elbow/extension:     0°=retracted, 180°=extended)
   Grip  — servo 3           (180°=open, ~80°=closed)
@@ -55,6 +58,13 @@ SERVO_STEP_INTERVAL_S = 0.02    # 50 Hz — matches typical servo PWM refresh
 # More steps = smoother Cartesian path.
 APPROACH_STEPS = 40
 
+# Minimum angle change (degrees) before a new set_servo command is sent.
+# Per-step deltas at SERVO_SPEED_DEG_S * SERVO_STEP_INTERVAL_S can fall below
+# a hobby servo's pulse resolution, causing it to hunt/jitter instead of
+# moving smoothly. Sub-threshold deltas are accumulated and flushed once they
+# cross this deadband.
+SERVO_POSITION_DEADBAND_DEG = 0.5
+
 # ---------------------------------------------------------------------------
 # Sensor reframing offsets (slide values, mm)
 # ---------------------------------------------------------------------------
@@ -66,18 +76,23 @@ LIDAR_TO_ARM_Z_MM =  93.5    # positive = yaw joint is above the LiDAR plane
 # ---------------------------------------------------------------------------
 # Yaw stepper conversion and motion config
 # ---------------------------------------------------------------------------
-
-# steps/rev = motor_steps_per_rev × microstep_divisor × gear_ratio
-YAW_STEPS_PER_REV = 200 * 16   # tune: 200-step motor, 1/16 microstepping, no gearing
-YAW_STEPS_PER_DEG = YAW_STEPS_PER_REV / 360.0
-
-BASE_STEPPER_MAX_VEL   = 800    # steps/s — tune for desired yaw speed
-BASE_STEPPER_ACCEL     = 400    # steps/s² — tune for desired yaw ramp rate
-
-# Tracks cumulative stepper position (steps from boot zero) so successive
-# grab_cylinder() calls issue correctly delta-relative moves instead of
-# always treating the current position as zero.
-_current_base_steps: int = 0
+#
+# DISABLED — stepper 1 (yaw/swivel) is mechanically out of service.
+# The robot is now expected to be physically pre-aligned so the cylinder
+# sits directly ahead of the manipulator (Y ≈ 0) before grab_cylinder() is
+# called. All stepper-related setup and motion below is commented out.
+#
+# # steps/rev = motor_steps_per_rev × microstep_divisor × gear_ratio
+# YAW_STEPS_PER_REV = 200 * 16   # tune: 200-step motor, 1/16 microstepping, no gearing
+# YAW_STEPS_PER_DEG = YAW_STEPS_PER_REV / 360.0
+#
+# BASE_STEPPER_MAX_VEL   = 800    # steps/s — tune for desired yaw speed
+# BASE_STEPPER_ACCEL     = 400    # steps/s² — tune for desired yaw ramp rate
+#
+# # Tracks cumulative stepper position (steps from boot zero) so successive
+# # grab_cylinder() calls issue correctly delta-relative moves instead of
+# # always treating the current position as zero.
+# _current_base_steps: int = 0
 
 # ---------------------------------------------------------------------------
 # Cylinder detection parameters
@@ -228,14 +243,18 @@ def _find_cylinder(robot: Robot) -> tuple[float, float, float] | None:
       5. Nearest survivor       — pick the closest passing cluster.
     """
     obstacles = robot._get_obstacles_mm()
+    print(f"[manipulator] raw lidar points: {len(obstacles)}")
     if len(obstacles) < CYLINDER_CLUSTER_MIN_PTS:
+        print(f"[manipulator] not enough raw points (< {CYLINDER_CLUSTER_MIN_PTS}) — is the lidar enabled / publishing?")
         return None
 
     pts = np.array(obstacles, dtype=float)   # shape (N, 2)
 
     # 1. Keep only forward-facing points (robot +x direction).
     pts = pts[pts[:, 0] > 0.0]
+    print(f"[manipulator] forward-facing points (x>0): {len(pts)}")
     if len(pts) < CYLINDER_CLUSTER_MIN_PTS:
+        print(f"[manipulator] not enough forward points (< {CYLINDER_CLUSTER_MIN_PTS})")
         return None
 
     # 2. Greedy radius clustering — group points within CYLINDER_CLUSTER_MAX_RAD_MM.
@@ -251,7 +270,13 @@ def _find_cylinder(robot: Robot) -> tuple[float, float, float] | None:
             visited[members] = True
             clusters.append(pts[members])
 
+    print(f"[manipulator] clusters formed: {len(clusters)}")
+    for cluster in clusters:
+        centroid = cluster.mean(axis=0)
+        print(f"[manipulator]   cluster: {len(cluster)} pts, centroid=({centroid[0]:.0f}, {centroid[1]:.0f}) mm")
+
     if not clusters:
+        print("[manipulator] no clusters — try increasing CYLINDER_CLUSTER_MAX_RAD_MM or decreasing CYLINDER_CLUSTER_MIN_PTS")
         return None
 
     # 3 & 4. Geometry filters — keep only clusters that look like a cylinder.
@@ -332,14 +357,20 @@ def _ik_planar(r: float, z_drop: float) -> tuple[float, float]:
     return theta2_deg, theta3_deg
 
 
-def _ik(X: float, Y: float, Z: float) -> tuple[float, float, float]:
+def _ik(X: float, Y: float, Z: float) -> tuple[float, float]:
     """
-    Full 3-DOF IK — returns (theta1_deg, theta2_deg, theta3_deg).
+    Planar IK — returns (theta2_deg, theta3_deg).
+
+    Yaw is no longer computed: stepper 1 is mechanically disabled and the
+    robot is assumed to be physically pre-aligned so the cylinder lies
+    directly ahead (Y is ignored). Reach `r` is taken from X only.
+
+    `Z` follows the file's documented convention (positive = target is
+    below the yaw joint), but `_ik_planar`'s internal frame is standard
+    math convention (positive = above), so the sign is flipped here.
     """
-    theta1_deg = math.degrees(math.atan2(Y, X))   # atan2(y, x) per teammate's convention
-    r = math.hypot(X, Y)
-    theta2_deg, theta3_deg = _ik_planar(r, Z)
-    return theta1_deg, theta2_deg, theta3_deg
+    r = X
+    return _ik_planar(r, -Z)
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +384,8 @@ def grab_cylinder(robot: Robot) -> bool:
 
     Sequence:
       1. Open gripper.
-      2. Yaw stepper rotates so the cylinder is directly in the arm's plane.
+      2. (Stepper yaw — disabled. Robot must be pre-aligned so the cylinder
+          is directly ahead of the manipulator before calling this function.)
       3. Shoulder + elbow sweep simultaneously along a straight Cartesian path
          from the retracted pose to the target pose.
       4. Close gripper.
@@ -371,8 +403,8 @@ def grab_cylinder(robot: Robot) -> bool:
     X, Y, Z = target
     print(f"[manipulator] target at arm-frame (X={X:.1f} Y={Y:.1f} Z={Z:.1f}) mm")
 
-    theta1_deg, theta2_target, theta3_target = _ik(X, Y, Z)
-    print(f"[manipulator] IK  θ1={theta1_deg:.1f}°  θ2={theta2_target:.1f}°  θ3={theta3_target:.1f}°")
+    theta2_target, theta3_target = _ik(X, Y, Z)
+    print(f"[manipulator] IK  θ2={theta2_target:.1f}°  θ3={theta3_target:.1f}°")
 
     # ------------------------------------------------------------------
     # 1. Open gripper (smooth sweep from wherever it is to fully open).
@@ -381,26 +413,26 @@ def grab_cylinder(robot: Robot) -> bool:
     _servo_sweep(robot, 3, GRIPPER_CLOSE_DEG, GRIPPER_OPEN_DEG)
 
     # ------------------------------------------------------------------
-    # 2. Yaw stepper — rotate arm so the cylinder is in the reach plane.
-    #    Configure velocity/acceleration first, then issue a delta-relative
-    #    move from the tracked current position to the new target.
+    # 2. Yaw stepper — DISABLED (stepper 1 mechanically out of service).
+    #    The robot must be physically pre-aligned so the cylinder is
+    #    directly ahead of the manipulator (Y ≈ 0) before this is called.
     # ------------------------------------------------------------------
-    global _current_base_steps
-    robot.step_set_config(1, max_velocity=BASE_STEPPER_MAX_VEL, acceleration=BASE_STEPPER_ACCEL)
-    robot.step_enable(1)
-
-    target_base_steps = int(round(theta1_deg * YAW_STEPS_PER_DEG))
-    steps_to_move = target_base_steps - _current_base_steps
-
-    if steps_to_move != 0:
-        print(f"[manipulator] yaw {theta1_deg:.1f}° — moving {steps_to_move:+d} steps (absolute target: {target_base_steps})")
-        ok = robot.step_move(1, steps_to_move, blocking=True, timeout=10.0)
-        if not ok:
-            print("[manipulator] stepper timed out — aborting")
-            return False
-        _current_base_steps = target_base_steps
-    else:
-        print("[manipulator] yaw already at target — no stepper move needed")
+    # global _current_base_steps
+    # robot.step_set_config(1, max_velocity=BASE_STEPPER_MAX_VEL, acceleration=BASE_STEPPER_ACCEL)
+    # robot.step_enable(1)
+    #
+    # target_base_steps = int(round(theta1_deg * YAW_STEPS_PER_DEG))
+    # steps_to_move = target_base_steps - _current_base_steps
+    #
+    # if steps_to_move != 0:
+    #     print(f"[manipulator] yaw {theta1_deg:.1f}° — moving {steps_to_move:+d} steps (absolute target: {target_base_steps})")
+    #     ok = robot.step_move(1, steps_to_move, blocking=True, timeout=10.0)
+    #     if not ok:
+    #         print("[manipulator] stepper timed out — aborting")
+    #         return False
+    #     _current_base_steps = target_base_steps
+    # else:
+    #     print("[manipulator] yaw already at target — no stepper move needed")
 
     # ------------------------------------------------------------------
     # 3. Straight-line Cartesian approach.
@@ -414,8 +446,12 @@ def grab_cylinder(robot: Robot) -> bool:
     robot.enable_servo(1)
     robot.enable_servo(2)
 
-    r_target  = math.hypot(X, Y)
-    z_drop    = Z
+    # Reach is taken directly from X — the robot is pre-aligned so the
+    # cylinder lies in the manipulator's sagittal plane (Y ≈ 0).
+    # Z follows the "positive = below yaw joint" convention; _ik_planar's
+    # internal frame is "positive = above", so flip the sign (see _ik).
+    r_target  = X
+    z_drop    = -Z
 
     # Current (retracted) servo angles — used as the interpolation start.
     shoulder_now = SHOULDER_RETRACTED_DEG
@@ -430,15 +466,50 @@ def grab_cylinder(robot: Robot) -> bool:
     n_steps = max(APPROACH_STEPS,
                   int(max(shoulder_travel, elbow_travel) / deg_per_step))
 
+    # Accumulated (rate-limited) target angles — used to rate-limit each step
+    # so the IK solution's discontinuity near the workspace boundary (small
+    # r_i) can't snap the servos straight to a far-away angle.
+    shoulder_accum = shoulder_now
+    elbow_accum    = elbow_now
+
+    # Angles actually last sent to the servos — used for the deadband below.
+    shoulder_sent = shoulder_now
+    elbow_sent    = elbow_now
+
     for i in range(1, n_steps + 1):
         t = i / n_steps
         # Interpolate reach linearly — straight horizontal line in Cartesian space.
         r_i = r_target * t
         # Recompute IK at each intermediate reach to follow the line exactly.
         s_deg, e_deg = _ik_planar(r_i, z_drop)
-        robot.set_servo(1, s_deg)
-        robot.set_servo(2, e_deg)
+
+        # Rate-limit: never move a servo more than deg_per_step from its
+        # accumulated target.
+        s_delta = max(-deg_per_step, min(deg_per_step, s_deg - shoulder_accum))
+        e_delta = max(-deg_per_step, min(deg_per_step, e_deg - elbow_accum))
+        shoulder_accum += s_delta
+        elbow_accum    += e_delta
+
+        # Deadband: only issue a new command once the accumulated target has
+        # moved far enough from the last commanded angle to be a real step
+        # for the servo, avoiding sub-resolution hunting/jitter.
+        if abs(shoulder_accum - shoulder_sent) >= SERVO_POSITION_DEADBAND_DEG:
+            shoulder_sent = shoulder_accum
+            robot.set_servo(1, shoulder_sent)
+        if abs(elbow_accum - elbow_sent) >= SERVO_POSITION_DEADBAND_DEG:
+            elbow_sent = elbow_accum
+            robot.set_servo(2, elbow_sent)
+
         time.sleep(SERVO_STEP_INTERVAL_S)
+
+    # Ensure the final target is always reached exactly, even if the last
+    # accumulated delta was below the deadband.
+    if shoulder_sent != shoulder_accum:
+        shoulder_sent = shoulder_accum
+        robot.set_servo(1, shoulder_sent)
+    if elbow_sent != elbow_accum:
+        elbow_sent = elbow_accum
+        robot.set_servo(2, elbow_sent)
 
     print("[manipulator] approach complete")
 
@@ -456,10 +527,10 @@ def grab_cylinder(robot: Robot) -> bool:
     theta2_lifted  = max(0.0, min(180.0, theta2_target - lift_delta_deg))
     theta3_lifted  = theta3_target   # elbow stays; shoulder carries the load
 
-    print(f"[manipulator] lifting  shoulder {theta2_target:.1f}° → {theta2_lifted:.1f}°")
+    print(f"[manipulator] lifting  shoulder {shoulder_sent:.1f}° → {theta2_lifted:.1f}°")
     _servos_sweep_simultaneous(
         robot,
-        starts=[(1, theta2_target), (2, theta3_target)],
+        starts=[(1, shoulder_sent), (2, elbow_sent)],
         ends  =[(1, theta2_lifted), (2, theta3_lifted)],
     )
 
