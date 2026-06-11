@@ -506,11 +506,11 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
 
         self._odom_traj.append(_raw_odom)
         self._fused_traj.append(_raw_fused)
-        self._node.get_logger().info(
-            f"odom=({_raw_odom[0]:.1f}, {_raw_odom[1]:.1f}) mm, θ ={float(math.degrees(msg.theta)):5.1f}°",
-            # f"fused=({_raw_fused[0]:.1f}, {_raw_fused[1]:.1f}) mm",
-            throttle_duration_sec=0.5,
-        )
+        # self._node.get_logger().info(
+        #     f"odom=({_raw_odom[0]:.1f}, {_raw_odom[1]:.1f}) mm, θ ={float(math.degrees(msg.theta)):5.1f}°",
+        #     # f"fused=({_raw_fused[0]:.1f}, {_raw_fused[1]:.1f}) mm",
+        #     throttle_duration_sec=0.5,
+        # )
         self._pose_event.set()
         self._pose_event.clear()
 
@@ -1467,6 +1467,35 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         msg.pulse_us = pulse_us
         self._srv_set_pub.publish(msg)
 
+    def set_servo_270(self, channel: int, angle_deg: float) -> None:
+        """
+        Set a 270° servo to angle_deg (0–270°).
+        Bypasses default limits to map 0° → 500 µs, 270° → 2500 µs.
+        """
+        channel = self._require_id("channel", channel, 1, 16)
+        angle_clamped = max(0.0, min(270.0, angle_deg))
+        pulse_us = int(500 + (angle_clamped / 270.0) * (2500 - 500))
+        msg = ServoSet()
+        msg.channel  = channel
+        msg.pulse_us = pulse_us
+        self._srv_set_pub.publish(msg)
+
+    def set_servo_180_wide(self, channel: int, angle_deg: float) -> None:
+        """
+        Set a wide-band 180° servo (like the DS3240MG-180) to angle_deg (0–180°).
+        Bypasses default limits to map 0° → 500 µs, 180° → 2500 µs.
+        """
+        channel = self._require_id("channel", channel, 1, 16)
+        angle_clamped = max(0.0, min(180.0, angle_deg))
+        
+        # Maps 0-180 directly to 500-2500
+        pulse_us = int(500 + (angle_clamped / 180.0) * (2000))
+        
+        msg = ServoSet()
+        msg.channel  = channel
+        msg.pulse_us = pulse_us
+        self._srv_set_pub.publish(msg)
+
     def set_servo_pulse(self, channel: int, pulse_us: int) -> None:
         """Set a servo directly by pulse width in microseconds."""
         channel = self._require_id("channel", channel, 1, 16)
@@ -2102,10 +2131,10 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         
         # --- Debug Logging ---
         self._node.get_logger().info(
-            # f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s"
+            f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s"
         )
         self._node.get_logger().info(
-            # f"LiDAR points detected: {len(obstacles)}"
+            f"LiDAR points detected: {len(obstacles)}"
         )
         # ---------------------
         
