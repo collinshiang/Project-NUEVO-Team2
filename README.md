@@ -2,6 +2,9 @@
 ![](/assets/NUEVO.png)
 
 Lab project material for the MAE 162 robotics course (Winter/Spring 2026).
+## Gallery
+
+See our [gallery](https://pochihh.github.io/ucla-162-gallery)!
 
 ## Overview
 
